@@ -18,7 +18,7 @@ option(ENABLE_LEAK_CHECKS
 
 option(ENABLE_GLOB_SEARCH
         "Enable compilation of all the files, not just the preselected ones"
-        ON)
+        OFF)
 
 set(UTILS_DIR ${CMAKE_SOURCE_DIR}/../utils)
 set(UTILS_SOURCES ${UTILS_DIR}/unit.cpp)
@@ -44,9 +44,3 @@ else ()
     list(APPEND TEST_SOURCES ${UTILS_SOURCES})
     add_executable(test ${TEST_SOURCES})
 endif ()
-
-add_executable(libcoro_test
-        ./libcoro_test.cpp
-        ./libcoro.cpp
-        ${UTILS_SOURCES}
-)
