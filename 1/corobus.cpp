@@ -75,9 +75,31 @@ coro_bus *coro_bus_new() {
     return current_coroutine_bus;
 }
 
-void coro_bus_delete(struct coro_bus *bus) {
-    /* IMPLEMENT THIS FUNCTION */
-    (void)bus;
+void coro_bus_delete(coro_bus *current_coroutine_bus) {
+    if (current_coroutine_bus == nullptr) {
+        return;
+    }
+
+    if (current_coroutine_bus->channels == nullptr) {
+        delete current_coroutine_bus;
+        return;
+    }
+
+    for (int index = 0; index < current_coroutine_bus->channel_count; ++index) {
+        if (auto *current_channel = current_coroutine_bus->channels[index]; current_channel != nullptr) {
+            assert(rlist_empty(&current_channel->recv_queue.coros));
+            assert(rlist_empty(&current_channel->send_queue.coros));
+
+            // Clear all message
+            while (!current_channel->message_queue.empty()) {
+                current_channel->message_queue.pop();
+            }
+
+            delete current_channel;
+        }
+    }
+    delete[] current_coroutine_bus->channels;
+    delete current_coroutine_bus;
 }
 
 coro_bus_channel *get_channel(const coro_bus *current_coroutine_bus, const std::size_t index) {

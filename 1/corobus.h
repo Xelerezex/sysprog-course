@@ -21,20 +21,20 @@ enum coro_bus_error_code {
 struct coro_bus;
 
 /** Get the latest error happened in coro_bus. */
-enum coro_bus_error_code coro_bus_errno(void);
+coro_bus_error_code coro_bus_errno();
 
 /** Set the global coro_bus error. */
-void coro_bus_errno_set(enum coro_bus_error_code error_code);
+void coro_bus_errno_set(coro_bus_error_code error_code);
 
 /** Create a new messaging bus with no channels in it. */
-struct coro_bus *coro_bus_new(void);
+coro_bus *coro_bus_new();
 
 /**
  * Destroy the bus and all its channels. The channels can not have
  * any suspended coroutines, but might have unconsumed data which
  * should be deleted too.
  */
-void coro_bus_delete(struct coro_bus *bus);
+void coro_bus_delete(coro_bus *current_coroutine_bus);
 
 /**
  * Create a channel inside the bus.
