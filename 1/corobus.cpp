@@ -24,31 +24,22 @@ struct wakeup_queue {
     struct rlist coros;
 };
 
-#if 0 /* Uncomment this if want to use */
-
 /** Suspend the current coroutine until it is woken up. */
-static void
-wakeup_queue_suspend_this(struct wakeup_queue *queue)
-{
-	struct wakeup_entry entry;
-	entry.coro = coro_this();
-	rlist_add_tail_entry(&queue->coros, &entry, base);
-	coro_suspend();
-	rlist_del_entry(&entry, base);
+static void wakeup_queue_suspend_this(struct wakeup_queue *queue) {
+    struct wakeup_entry entry;
+    entry.coro = coro_this();
+    rlist_add_tail_entry(&queue->coros, &entry, base);
+    coro_suspend();
+    rlist_del_entry(&entry, base);
 }
 
 /** Wakeup the first coroutine in the queue. */
-static void
-wakeup_queue_wakeup_first(struct wakeup_queue *queue)
-{
-	if (rlist_empty(&queue->coros))
-		return;
-	struct wakeup_entry *entry = rlist_first_entry(&queue->coros,
-		struct wakeup_entry, base);
-	coro_wakeup(entry->coro);
+static void wakeup_queue_wakeup_first(struct wakeup_queue *queue) {
+    if (rlist_empty(&queue->coros))
+        return;
+    struct wakeup_entry *entry = rlist_first_entry(&queue->coros, struct wakeup_entry, base);
+    coro_wakeup(entry->coro);
 }
-
-#endif
 
 struct coro_bus_channel {
     /** Channel max capacity. */
@@ -147,30 +138,36 @@ int coro_bus_channel_open(coro_bus *current_coroutine_bus, const size_t size_lim
     return old_count;
 }
 
-void coro_bus_channel_close(struct coro_bus *bus, int channel) {
-    /* IMPLEMENT THIS FUNCTION */
-    (void)bus;
-    (void)channel;
-    /*
-     * Be very attentive here. What happens, if the channel is
-     * closed while there are coroutines waiting on it? For
-     * example, the channel was empty, and some coros were
-     * waiting on its recv_queue.
-     *
-     * If you wakeup those coroutines and just delete the
-     * channel right away, then those waiting coroutines might
-     * on wakeup try to reference invalid memory.
-     *
-     * Can happen, for example, if you use an intrusive list
-     * (rlist), delete the list itself (by deleting the
-     * channel), and then the coroutines on wakeup would try
-     * to remove themselves from the already destroyed list.
-     *
-     * Think how you could address that. Remove all the
-     * waiters from the list before freeing it? Yield this
-     * coroutine after waking up the waiters but before
-     * freeing the channel, so the waiters could safely leave?
-     */
+void coro_bus_channel_close(coro_bus *current_coroutine_bus, const int channel) {
+    auto *current_channel = get_channel(current_coroutine_bus, static_cast<std::size_t>(channel));
+    if (current_channel == nullptr) {
+        return;
+    }
+    // close channel
+    current_coroutine_bus->channels[channel] = nullptr;
+
+    // Wakeup all for send
+    while (!rlist_empty(&current_channel->send_queue.coros)) {
+        wakeup_entry *entry = rlist_first_entry(&current_channel->send_queue.coros, struct wakeup_entry, base);
+        rlist_del_entry(entry, base);
+        coro_wakeup(entry->coro);
+    }
+    // Wakeup all for receive
+    while (!rlist_empty(&current_channel->recv_queue.coros)) {
+        wakeup_entry *entry = rlist_first_entry(&current_channel->recv_queue.coros, struct wakeup_entry, base);
+        rlist_del_entry(entry, base);
+        coro_wakeup(entry->coro);
+    }
+
+    // Yield coroutines, give scheduler a chance to run woken coroutines
+    coro_yield();
+
+    // Clear all message
+    while (!current_channel->message_queue.empty()) {
+        current_channel->message_queue.pop();
+    }
+
+    delete current_channel;
 }
 
 int coro_bus_send(struct coro_bus *bus, int channel, unsigned data) {

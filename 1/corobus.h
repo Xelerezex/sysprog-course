@@ -52,10 +52,10 @@ int coro_bus_channel_open(coro_bus *current_coroutine_bus, size_t size_limit);
  * channel must exist. All pending messages of the channel are
  * deleted and lost. All the coroutines suspended on this channel
  * are woken up and get the error that the channel is missing.
- * @param bus Bus to destroy the channel in.
+ * @param current_coroutine_bus Bus to destroy the channel in.
  * @param channel Descriptor of the channel to destroy.
  */
-void coro_bus_channel_close(struct coro_bus *bus, int channel);
+void coro_bus_channel_close(coro_bus *current_coroutine_bus, int channel);
 
 /**
  * Send the given message to the specified channel. If the channel
