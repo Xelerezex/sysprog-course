@@ -34,18 +34,18 @@ coro_bus *coro_bus_new();
  * any suspended coroutines, but might have unconsumed data which
  * should be deleted too.
  */
-void coro_bus_delete(coro_bus *current_coroutine_bus);
+void coro_bus_delete(coro_bus *coroutines_bus);
 
 /**
  * Create a channel inside the bus.
- * @param current_coroutine_bus The bus to create the channel in.
+ * @param coroutines_bus The bus to create the channel in.
  * @param size_limit Maximum messages a channel can hold in memory
  *     at once.
  *
  * @retval >=0 Descriptor of the channel. It must be passed to the
  *     send/recv functions.
  */
-int coro_bus_channel_open(coro_bus *current_coroutine_bus, size_t size_limit);
+int coro_bus_channel_open(coro_bus *coroutines_bus, size_t size_limit);
 
 /**
  * Destroy the channel identified by the given descriptor. The
