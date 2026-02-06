@@ -343,9 +343,122 @@ int coro_bus_broadcast(coro_bus *coroutines_bus, const unsigned data) {
 }
 
 #endif    // NEED_BROADCAST
-    assert(data != nullptr);
 
-    coro_bus_channel *current_channel = get_bus_channel(current_coroutine_bus, channel);
+#if NEED_BATCH
+
+int coro_bus_send_v(coro_bus *coroutines_bus, const int channel, const unsigned *data, const unsigned count) {
+    if (data == nullptr && count != 0) {
+        coro_bus_errno_set(CORO_BUS_ERR_NONE);
+        return -1;
+    }
+
+    while (true) {
+        coro_bus_channel *current_channel = get_bus_channel(coroutines_bus, channel);
+        if (current_channel == nullptr) {
+            coro_bus_errno_set(CORO_BUS_ERR_NO_CHANNEL);
+            return -1;
+        }
+
+        const std::size_t available_size = current_channel->size_limit - current_channel->message_queue.size();
+        if (available_size == 0) {
+            // Block only when we can't send even 1
+            wakeup_queue_suspend_this(&current_channel->send_queue);
+            continue;
+        }
+
+        const unsigned to_send = count < available_size ? count : static_cast<unsigned>(available_size);
+
+        for (unsigned index = 0; index < to_send; ++index) {
+            current_channel->message_queue.push_back(data[index]);
+        }
+
+        // Wake as many receivers as messages we produced
+        for (unsigned index = 0; index < to_send; ++index) {
+            wakeup_queue_wakeup_first(&current_channel->recv_queue);
+        }
+
+        coro_bus_errno_set(CORO_BUS_ERR_NONE);
+        return static_cast<int>(to_send);
+    }
+}
+
+int coro_bus_try_send_v(coro_bus *coroutines_bus, const int channel, const unsigned *data, const unsigned count) {
+    if (data == nullptr && count != 0) {
+        coro_bus_errno_set(CORO_BUS_ERR_NONE);
+        return -1;
+    }
+
+    coro_bus_channel *current_channel = get_bus_channel(coroutines_bus, channel);
+    if (current_channel == nullptr) {
+        coro_bus_errno_set(CORO_BUS_ERR_NO_CHANNEL);
+        return -1;
+    }
+
+    const std::size_t available_size = current_channel->size_limit - current_channel->message_queue.size();
+    if (available_size == 0) {
+        coro_bus_errno_set(CORO_BUS_ERR_WOULD_BLOCK);
+        return -1;
+    }
+
+    const unsigned to_send = count < available_size ? count : static_cast<unsigned>(available_size);
+
+    for (unsigned index = 0; index < to_send; ++index) {
+        current_channel->message_queue.push_back(data[index]);
+    }
+
+    for (unsigned index = 0; index < to_send; ++index) {
+        wakeup_queue_wakeup_first(&current_channel->recv_queue);
+    }
+
+    coro_bus_errno_set(CORO_BUS_ERR_NONE);
+    return static_cast<int>(to_send);
+}
+
+int coro_bus_recv_v(coro_bus *coroutines_bus, const int channel, unsigned *data, const unsigned capacity) {
+    if (data == nullptr && capacity != 0) {
+        coro_bus_errno_set(CORO_BUS_ERR_NONE);
+        return -1;
+    }
+
+    while (true) {
+        coro_bus_channel *current_channel = get_bus_channel(coroutines_bus, channel);
+        if (current_channel == nullptr) {
+            coro_bus_errno_set(CORO_BUS_ERR_NO_CHANNEL);
+            return -1;
+        }
+
+        if (current_channel->message_queue.empty()) {
+            // Block only when we can't receive even 1
+            wakeup_queue_suspend_this(&current_channel->recv_queue);
+            continue;
+        }
+
+        const unsigned to_receive = current_channel->message_queue.size() < capacity
+                                            ? static_cast<unsigned>(current_channel->message_queue.size())
+                                            : capacity;
+
+        for (unsigned index = 0; index < to_receive; ++index) {
+            data[index] = current_channel->message_queue.front();
+            current_channel->message_queue.pop_front();
+        }
+
+        // Wake as many senders as slots we freed (or until none wait)
+        for (unsigned i = 0; i < to_receive; ++i) {
+            wakeup_queue_wakeup_first(&current_channel->send_queue);
+        }
+
+        coro_bus_errno_set(CORO_BUS_ERR_NONE);
+        return static_cast<int>(to_receive);
+    }
+}
+
+int coro_bus_try_recv_v(coro_bus *coroutines_bus, const int channel, unsigned *data, const unsigned capacity) {
+    if (data == nullptr && capacity != 0) {
+        coro_bus_errno_set(CORO_BUS_ERR_NONE);
+        return -1;
+    }
+
+    coro_bus_channel *current_channel = get_bus_channel(coroutines_bus, channel);
     if (current_channel == nullptr) {
         coro_bus_errno_set(CORO_BUS_ERR_NO_CHANNEL);
         return -1;
@@ -356,76 +469,21 @@ int coro_bus_broadcast(coro_bus *coroutines_bus, const unsigned data) {
         return -1;
     }
 
-    *data = current_channel->message_queue.front();
-    current_channel->message_queue.pop_front();
+    const unsigned to_receive = current_channel->message_queue.size() < capacity
+                                        ? static_cast<unsigned>(current_channel->message_queue.size())
+                                        : capacity;
 
-    // Space appeared -> wake one sender.
-    wakeup_queue_wakeup_first(&current_channel->send_queue);
+    for (unsigned index = 0; index < to_receive; ++index) {
+        data[index] = current_channel->message_queue.front();
+        current_channel->message_queue.pop_front();
+    }
+
+    for (unsigned index = 0; index < to_receive; ++index) {
+        wakeup_queue_wakeup_first(&current_channel->send_queue);
+    }
 
     coro_bus_errno_set(CORO_BUS_ERR_NONE);
-    return 0;
+    return static_cast<int>(to_receive);
 }
 
-#if NEED_BROADCAST
-
-int coro_bus_broadcast(struct coro_bus *bus, unsigned data) {
-    /* IMPLEMENT THIS FUNCTION */
-    (void)bus;
-    (void)data;
-    coro_bus_errno_set(CORO_BUS_ERR_NOT_IMPLEMENTED);
-    return -1;
-}
-
-int coro_bus_try_broadcast(struct coro_bus *bus, unsigned data) {
-    /* IMPLEMENT THIS FUNCTION */
-    (void)bus;
-    (void)data;
-    coro_bus_errno_set(CORO_BUS_ERR_NOT_IMPLEMENTED);
-    return -1;
-}
-
-#endif
-
-#if NEED_BATCH
-
-int coro_bus_send_v(struct coro_bus *bus, int channel, const unsigned *data, unsigned count) {
-    /* IMPLEMENT THIS FUNCTION */
-    (void)bus;
-    (void)channel;
-    (void)data;
-    (void)count;
-    coro_bus_errno_set(CORO_BUS_ERR_NOT_IMPLEMENTED);
-    return -1;
-}
-
-int coro_bus_try_send_v(struct coro_bus *bus, int channel, const unsigned *data, unsigned count) {
-    /* IMPLEMENT THIS FUNCTION */
-    (void)bus;
-    (void)channel;
-    (void)data;
-    (void)count;
-    coro_bus_errno_set(CORO_BUS_ERR_NOT_IMPLEMENTED);
-    return -1;
-}
-
-int coro_bus_recv_v(struct coro_bus *bus, int channel, unsigned *data, unsigned capacity) {
-    /* IMPLEMENT THIS FUNCTION */
-    (void)bus;
-    (void)channel;
-    (void)data;
-    (void)capacity;
-    coro_bus_errno_set(CORO_BUS_ERR_NOT_IMPLEMENTED);
-    return -1;
-}
-
-int coro_bus_try_recv_v(struct coro_bus *bus, int channel, unsigned *data, unsigned capacity) {
-    /* IMPLEMENT THIS FUNCTION */
-    (void)bus;
-    (void)channel;
-    (void)data;
-    (void)capacity;
-    coro_bus_errno_set(CORO_BUS_ERR_NOT_IMPLEMENTED);
-    return -1;
-}
-
-#endif
+#endif    // NEED_BATCH

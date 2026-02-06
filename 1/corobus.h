@@ -156,7 +156,7 @@ int coro_bus_try_broadcast(struct coro_bus *current_coroutine_bus, unsigned data
  * until the channel has space. When there is space, the function
  * submits as many messages as the channel fits, and returns how
  * many was sent.
- * @param bus Bus where the channel is located.
+ * @param coroutines_bus Bus where the channel is located.
  * @param channel Descriptor of the channel to send data to.
  * @param data Array of messages to send.
  * @param count Size of @a data.
@@ -167,12 +167,12 @@ int coro_bus_try_broadcast(struct coro_bus *current_coroutine_bus, unsigned data
  * @retval -1 Error. Check coro_bus_errno() for reason.
  *     - CORO_BUS_ERR_NO_CHANNEL - the channel doesn't exist.
  */
-int coro_bus_send_v(struct coro_bus *bus, int channel, const unsigned *data, unsigned count);
+int coro_bus_send_v(struct coro_bus *coroutines_bus, int channel, const unsigned *data, unsigned count);
 
 /**
  * Same as coro_bus_send_v(), but fails instantly in case the
  * channel is full and doesn't fit a single message.
- * @param bus Bus where the channel is located.
+ * @param coroutines_bus Bus where the channel is located.
  * @param channel Descriptor of the channel to send data to.
  * @param data Array of messages to send.
  * @param count Size of @a data.
@@ -184,7 +184,7 @@ int coro_bus_send_v(struct coro_bus *bus, int channel, const unsigned *data, uns
  *     - CORO_BUS_ERR_NO_CHANNEL - the channel doesn't exist.
  *     - CORO_BUS_ERR_WOULD_BLOCK - the channel is full.
  */
-int coro_bus_try_send_v(struct coro_bus *bus, int channel, const unsigned *data, unsigned count);
+int coro_bus_try_send_v(struct coro_bus *coroutines_bus, int channel, const unsigned *data, unsigned count);
 
 /**
  * Same as coro_bus_recv(), but can receive multiple messages at
@@ -192,7 +192,7 @@ int coro_bus_try_send_v(struct coro_bus *bus, int channel, const unsigned *data,
  * until there are messages in the channel. When messages found,
  * the function receives as many of them as can, and returns how
  * many.
- * @param bus Bus where the channel is located.
+ * @param coroutines_bus Bus where the channel is located.
  * @param channel Descriptor of the channel to recv data from.
  * @param data Array to save the received messages into.
  * @param count Capacity of @a data.
@@ -204,12 +204,12 @@ int coro_bus_try_send_v(struct coro_bus *bus, int channel, const unsigned *data,
  * @retval -1 Error. Check coro_bus_errno() for reason.
  *     - CORO_BUS_ERR_NO_CHANNEL - the channel doesn't exist.
  */
-int coro_bus_recv_v(struct coro_bus *bus, int channel, unsigned *data, unsigned capacity);
+int coro_bus_recv_v(struct coro_bus *coroutines_bus, int channel, unsigned *data, unsigned capacity);
 
 /**
  * Same as coro_bus_recv_v(), but fails instantly if the channel
  * is empty.
- * @param bus Bus where the channel is located.
+ * @param coroutines_bus Bus where the channel is located.
  * @param channel Descriptor of the channel to recv data from.
  * @param data Array to save the received messages into.
  * @param count Capacity of @a data.
@@ -222,6 +222,6 @@ int coro_bus_recv_v(struct coro_bus *bus, int channel, unsigned *data, unsigned 
  *     - CORO_BUS_ERR_NO_CHANNEL - the channel doesn't exist.
  *     - CORO_BUS_ERR_WOULD_BLOCK - the channel is empty.
  */
-int coro_bus_try_recv_v(struct coro_bus *bus, int channel, unsigned *data, unsigned capacity);
+int coro_bus_try_recv_v(struct coro_bus *coroutines_bus, int channel, unsigned *data, unsigned capacity);
 
 #endif /* Bonus 2 */
