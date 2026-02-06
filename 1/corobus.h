@@ -124,19 +124,19 @@ int coro_bus_try_recv(coro_bus *current_coroutine_bus, int channel, unsigned *da
  * If any of the channels are full, then the message isn't sent
  * anywhere, and the coroutine is suspended until can submit the
  * data to all the channels.
- * @param bus Bus where the channels are located.
+ * @param current_coroutine_bus Bus where the channels are located.
  * @param data Data to send.
  *
  * @retval 0 Success. Sent to all the channels.
  * @retval -1 Error. Check coro_bus_errno() for reason.
  *     - CORO_BUS_ERR_NO_CHANNEL - no channels in the bus.
  */
-int coro_bus_broadcast(struct coro_bus *bus, unsigned data);
+int coro_bus_broadcast(struct coro_bus *current_coroutine_bus, unsigned data);
 
 /**
  * Same as coro_bus_broadcast(), but if any of the channels are
  * full, it instantly returns, not suspends.
- * @param bus  Bus where the channels are located.
+ * @param current_coroutine_bus  Bus where the channels are located.
  * @param data Data to send.
  *
  * @retval 0 Success. Sent to all the channels.
@@ -144,7 +144,7 @@ int coro_bus_broadcast(struct coro_bus *bus, unsigned data);
  *     - CORO_BUS_ERR_NO_CHANNEL - no channels in the bus.
  *     - CORO_BUS_ERR_WOULD_BLOCK - at least one channel is full.
  */
-int coro_bus_try_broadcast(struct coro_bus *bus, unsigned data);
+int coro_bus_try_broadcast(struct coro_bus *current_coroutine_bus, unsigned data);
 
 #endif         /* Bonus 1 */
 
