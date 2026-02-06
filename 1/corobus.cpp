@@ -33,7 +33,7 @@ static void wakeup_queue_suspend_this(wakeup_queue *queue) {
     rlist_del_entry(&entry, base);
 }
 
-static void wakeup_queue_wakeup_first(wakeup_queue *queue) {
+static void wakeup_queue_wakeup_first(const wakeup_queue *queue) {
     if (rlist_empty(&queue->coroutines)) {
         return;
     }
@@ -43,7 +43,7 @@ static void wakeup_queue_wakeup_first(wakeup_queue *queue) {
     coro_wakeup(entry->coroutine);
 }
 
-static void wakeup_queue_wakeup_all(wakeup_queue *queue) {
+static void wakeup_queue_wakeup_all(const wakeup_queue *queue) {
     while (!rlist_empty(&queue->coroutines)) {
         auto *e = rlist_first_entry(&queue->coroutines, wakeup_entry, base);
         rlist_del_entry(e, base);
@@ -170,7 +170,7 @@ int coro_bus_channel_open(coro_bus *coroutines_bus, std::size_t size_limit) {
     return old_capacity;
 }
 
-void coro_bus_channel_close(coro_bus *coroutines_bus, const int channel) {
+void coro_bus_channel_close(const coro_bus *coroutines_bus, const int channel) {
     auto *current_channel = get_bus_channel(coroutines_bus, channel);
     if (current_channel == nullptr) {
         return;
@@ -186,26 +186,7 @@ void coro_bus_channel_close(coro_bus *coroutines_bus, const int channel) {
     delete current_channel;
 }
 
-int coro_bus_try_send(coro_bus *bus, const int channel, const unsigned data) {
-    auto *current_channel = get_bus_channel(bus, channel);
-    if (current_channel == nullptr) {
-        coro_bus_errno_set(CORO_BUS_ERR_NO_CHANNEL);
-        return -1;
-    }
-
-    if (current_channel->message_queue.size() >= current_channel->size_limit) {
-        coro_bus_errno_set(CORO_BUS_ERR_WOULD_BLOCK);
-        return -1;
-    }
-
-    current_channel->message_queue.push_back(data);
-    wakeup_queue_wakeup_first(&current_channel->recv_queue);
-
-    coro_bus_errno_set(CORO_BUS_ERR_NONE);
-    return 0;
-}
-
-int coro_bus_send(coro_bus *coroutines_bus, const int channel, const unsigned data) {
+int coro_bus_send(const coro_bus *coroutines_bus, const int channel, const unsigned data) {
     while (true) {
         if (coro_bus_try_send(coroutines_bus, channel, data) == 0) {
             return 0;
@@ -224,7 +205,46 @@ int coro_bus_send(coro_bus *coroutines_bus, const int channel, const unsigned da
     }
 }
 
-int coro_bus_try_recv(coro_bus *coroutines_bus, const int channel, unsigned *data) {
+int coro_bus_try_send(const coro_bus *coroutines_bus, const int channel, const unsigned data) {
+    auto *current_channel = get_bus_channel(coroutines_bus, channel);
+    if (current_channel == nullptr) {
+        coro_bus_errno_set(CORO_BUS_ERR_NO_CHANNEL);
+        return -1;
+    }
+
+    if (current_channel->message_queue.size() >= current_channel->size_limit) {
+        coro_bus_errno_set(CORO_BUS_ERR_WOULD_BLOCK);
+        return -1;
+    }
+
+    current_channel->message_queue.push_back(data);
+    wakeup_queue_wakeup_first(&current_channel->recv_queue);
+
+    coro_bus_errno_set(CORO_BUS_ERR_NONE);
+    return 0;
+}
+
+int coro_bus_recv(const coro_bus *coroutines_bus, const int channel, unsigned *data) {
+    assert(data != nullptr);
+
+    while (true) {
+        if (coro_bus_try_recv(coroutines_bus, channel, data) == 0) {
+            return 0;
+        }
+        if (coro_bus_errno() != CORO_BUS_ERR_WOULD_BLOCK) {
+            return -1;
+        }
+
+        auto *current_channel = get_bus_channel(coroutines_bus, channel);
+        if (current_channel == nullptr) {
+            coro_bus_errno_set(CORO_BUS_ERR_NO_CHANNEL);
+            return -1;
+        }
+        wakeup_queue_suspend_this(&current_channel->recv_queue);
+    }
+}
+
+int coro_bus_try_recv(const coro_bus *coroutines_bus, const int channel, unsigned *data) {
     assert(data != nullptr);
 
     auto *current_channel = get_bus_channel(coroutines_bus, channel);
@@ -246,29 +266,9 @@ int coro_bus_try_recv(coro_bus *coroutines_bus, const int channel, unsigned *dat
     return 0;
 }
 
-int coro_bus_recv(coro_bus *coroutines_bus, const int channel, unsigned *data) {
-    assert(data != nullptr);
-
-    while (true) {
-        if (coro_bus_try_recv(coroutines_bus, channel, data) == 0) {
-            return 0;
-        }
-        if (coro_bus_errno() != CORO_BUS_ERR_WOULD_BLOCK) {
-            return -1;
-        }
-
-        auto *current_channel = get_bus_channel(coroutines_bus, channel);
-        if (current_channel == nullptr) {
-            coro_bus_errno_set(CORO_BUS_ERR_NO_CHANNEL);
-            return -1;
-        }
-        wakeup_queue_suspend_this(&current_channel->recv_queue);
-    }
-}
-
 #if NEED_BROADCAST
 
-int coro_bus_try_broadcast(coro_bus *coroutines_bus, const unsigned data) {
+int coro_bus_try_broadcast(const coro_bus *coroutines_bus, const unsigned data) {
     if (!is_bus_has_any_channels(coroutines_bus)) {
         coro_bus_errno_set(CORO_BUS_ERR_NO_CHANNEL);
         return -1;
@@ -300,7 +300,7 @@ int coro_bus_try_broadcast(coro_bus *coroutines_bus, const unsigned data) {
     return 0;
 }
 
-int coro_bus_broadcast(coro_bus *coroutines_bus, const unsigned data) {
+int coro_bus_broadcast(const coro_bus *coroutines_bus, const unsigned data) {
     while (true) {
         if (!is_bus_has_any_channels(coroutines_bus)) {
             coro_bus_errno_set(CORO_BUS_ERR_NO_CHANNEL);
@@ -346,7 +346,7 @@ int coro_bus_broadcast(coro_bus *coroutines_bus, const unsigned data) {
 
 #if NEED_BATCH
 
-int coro_bus_send_v(coro_bus *coroutines_bus, const int channel, const unsigned *data, const unsigned count) {
+int coro_bus_send_v(const coro_bus *coroutines_bus, const int channel, const unsigned *data, const unsigned count) {
     if (data == nullptr && count != 0) {
         coro_bus_errno_set(CORO_BUS_ERR_NONE);
         return -1;
@@ -382,7 +382,7 @@ int coro_bus_send_v(coro_bus *coroutines_bus, const int channel, const unsigned 
     }
 }
 
-int coro_bus_try_send_v(coro_bus *coroutines_bus, const int channel, const unsigned *data, const unsigned count) {
+int coro_bus_try_send_v(const coro_bus *coroutines_bus, const int channel, const unsigned *data, const unsigned count) {
     if (data == nullptr && count != 0) {
         coro_bus_errno_set(CORO_BUS_ERR_NONE);
         return -1;
@@ -414,7 +414,7 @@ int coro_bus_try_send_v(coro_bus *coroutines_bus, const int channel, const unsig
     return static_cast<int>(to_send);
 }
 
-int coro_bus_recv_v(coro_bus *coroutines_bus, const int channel, unsigned *data, const unsigned capacity) {
+int coro_bus_recv_v(const coro_bus *coroutines_bus, const int channel, unsigned *data, const unsigned capacity) {
     if (data == nullptr && capacity != 0) {
         coro_bus_errno_set(CORO_BUS_ERR_NONE);
         return -1;
@@ -452,7 +452,7 @@ int coro_bus_recv_v(coro_bus *coroutines_bus, const int channel, unsigned *data,
     }
 }
 
-int coro_bus_try_recv_v(coro_bus *coroutines_bus, const int channel, unsigned *data, const unsigned capacity) {
+int coro_bus_try_recv_v(const coro_bus *coroutines_bus, const int channel, unsigned *data, const unsigned capacity) {
     if (data == nullptr && capacity != 0) {
         coro_bus_errno_set(CORO_BUS_ERR_NONE);
         return -1;

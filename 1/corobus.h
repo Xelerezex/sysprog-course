@@ -1,6 +1,6 @@
 #pragma once
 
-#include <stddef.h>
+#include <cstddef>
 
 /**
  * Here you should specify which bonuses do you want via the
@@ -52,16 +52,16 @@ int coro_bus_channel_open(coro_bus *coroutines_bus, size_t size_limit);
  * channel must exist. All pending messages of the channel are
  * deleted and lost. All the coroutines suspended on this channel
  * are woken up and get the error that the channel is missing.
- * @param current_coroutine_bus Bus to destroy the channel in.
+ * @param coroutines_bus Bus to destroy the channel in.
  * @param channel Descriptor of the channel to destroy.
  */
-void coro_bus_channel_close(coro_bus *current_coroutine_bus, int channel);
+void coro_bus_channel_close(const coro_bus *coroutines_bus, int channel);
 
 /**
  * Send the given message to the specified channel. If the channel
  * is full, the function should suspend the current coroutine and
  * retry until success or until the channel is gone.
- * @param current_coroutine_bus Bus where the channel is located.
+ * @param coroutines_bus Bus where the channel is located.
  * @param channel Descriptor of the channel to send data to.
  * @param data Data to send.
  *
@@ -69,13 +69,13 @@ void coro_bus_channel_close(coro_bus *current_coroutine_bus, int channel);
  * @retval -1 Error. Check coro_bus_errno() for reason.
  *     - CORO_BUS_ERR_NO_CHANNEL - the channel doesn't exist.
  */
-int coro_bus_send(coro_bus *current_coroutine_bus, int channel, unsigned data);
+int coro_bus_send(const coro_bus *coroutines_bus, int channel, unsigned data);
 
 /**
  * Same as coro_bus_send(), but if the channel is full, the
  * function immediately returns. It never suspends the current
  * coroutine.
- * @param current_coroutine_bus Bus where the channel is located.
+ * @param coroutines_bus Bus where the channel is located.
  * @param channel Descriptor of the channel to send data to.
  * @param data Data to send.
  *
@@ -84,13 +84,13 @@ int coro_bus_send(coro_bus *current_coroutine_bus, int channel, unsigned data);
  *     - CORO_BUS_ERR_NO_CHANNEL - the channel doesn't exist.
  *     - CORO_BUS_ERR_WOULD_BLOCK - the channel is full.
  */
-int coro_bus_try_send(coro_bus *current_coroutine_bus, int channel, unsigned data);
+int coro_bus_try_send(const coro_bus *coroutines_bus, int channel, unsigned data);
 
 /**
  * Recv a message from the specified channel. If the channel is
  * empty, the function should suspend the current coroutine and
  * retry until success or until the channel is gone.
- * @param current_coroutine_bus Bus where the channel is located.
+ * @param coroutines_bus Bus where the channel is located.
  * @param channel Descriptor of the channel to send data to.
  * @param data Output parameter to save the data to.
  *
@@ -99,13 +99,13 @@ int coro_bus_try_send(coro_bus *current_coroutine_bus, int channel, unsigned dat
  * @retval -1 Error. Check coro_bus_errno() for reason.
  *     - CORO_BUS_ERR_NO_CHANNEL - the channel doesn't exist.
  */
-int coro_bus_recv(coro_bus *current_coroutine_bus, int channel, unsigned *data);
+int coro_bus_recv(const coro_bus *coroutines_bus, int channel, unsigned *data);
 
 /**
  * Same as coro_bus_recv(), but if the channel is empty, the
  * function immediately returns. It never suspends the current
  * coroutine.
- * @param current_coroutine_bus Bus where the channel is located.
+ * @param coroutines_bus Bus where the channel is located.
  * @param channel Descriptor of the channel to send data to.
  * @param data Output parameter to save the data to.
  *
@@ -115,7 +115,7 @@ int coro_bus_recv(coro_bus *current_coroutine_bus, int channel, unsigned *data);
  *     - CORO_BUS_ERR_NO_CHANNEL - the channel doesn't exist.
  *     - CORO_BUS_ERR_WOULD_BLOCK - the channel is empty.
  */
-int coro_bus_try_recv(coro_bus *current_coroutine_bus, int channel, unsigned *data);
+int coro_bus_try_recv(const coro_bus *coroutines_bus, int channel, unsigned *data);
 
 #if NEED_BROADCAST /* Bonus 1 */
 
@@ -124,14 +124,14 @@ int coro_bus_try_recv(coro_bus *current_coroutine_bus, int channel, unsigned *da
  * If any of the channels are full, then the message isn't sent
  * anywhere, and the coroutine is suspended until can submit the
  * data to all the channels.
- * @param current_coroutine_bus Bus where the channels are located.
+ * @param coroutines_bus Bus where the channels are located.
  * @param data Data to send.
  *
  * @retval 0 Success. Sent to all the channels.
  * @retval -1 Error. Check coro_bus_errno() for reason.
  *     - CORO_BUS_ERR_NO_CHANNEL - no channels in the bus.
  */
-int coro_bus_broadcast(struct coro_bus *current_coroutine_bus, unsigned data);
+int coro_bus_broadcast(const coro_bus *coroutines_bus, unsigned data);
 
 /**
  * Same as coro_bus_broadcast(), but if any of the channels are
@@ -144,7 +144,7 @@ int coro_bus_broadcast(struct coro_bus *current_coroutine_bus, unsigned data);
  *     - CORO_BUS_ERR_NO_CHANNEL - no channels in the bus.
  *     - CORO_BUS_ERR_WOULD_BLOCK - at least one channel is full.
  */
-int coro_bus_try_broadcast(struct coro_bus *current_coroutine_bus, unsigned data);
+int coro_bus_try_broadcast(const coro_bus *current_coroutine_bus, unsigned data);
 
 #endif         /* Bonus 1 */
 
@@ -167,7 +167,7 @@ int coro_bus_try_broadcast(struct coro_bus *current_coroutine_bus, unsigned data
  * @retval -1 Error. Check coro_bus_errno() for reason.
  *     - CORO_BUS_ERR_NO_CHANNEL - the channel doesn't exist.
  */
-int coro_bus_send_v(struct coro_bus *coroutines_bus, int channel, const unsigned *data, unsigned count);
+int coro_bus_send_v(const coro_bus *coroutines_bus, int channel, const unsigned *data, unsigned count);
 
 /**
  * Same as coro_bus_send_v(), but fails instantly in case the
@@ -184,7 +184,7 @@ int coro_bus_send_v(struct coro_bus *coroutines_bus, int channel, const unsigned
  *     - CORO_BUS_ERR_NO_CHANNEL - the channel doesn't exist.
  *     - CORO_BUS_ERR_WOULD_BLOCK - the channel is full.
  */
-int coro_bus_try_send_v(struct coro_bus *coroutines_bus, int channel, const unsigned *data, unsigned count);
+int coro_bus_try_send_v(const struct coro_bus *coroutines_bus, int channel, const unsigned *data, unsigned count);
 
 /**
  * Same as coro_bus_recv(), but can receive multiple messages at
@@ -195,7 +195,7 @@ int coro_bus_try_send_v(struct coro_bus *coroutines_bus, int channel, const unsi
  * @param coroutines_bus Bus where the channel is located.
  * @param channel Descriptor of the channel to recv data from.
  * @param data Array to save the received messages into.
- * @param count Capacity of @a data.
+ * @param capacity - Capacity of @a data.
  *
  * @retval >0 Success, how many messages were received. They are
  *     saved into @a data in the order of receiving. For example,
@@ -204,7 +204,7 @@ int coro_bus_try_send_v(struct coro_bus *coroutines_bus, int channel, const unsi
  * @retval -1 Error. Check coro_bus_errno() for reason.
  *     - CORO_BUS_ERR_NO_CHANNEL - the channel doesn't exist.
  */
-int coro_bus_recv_v(struct coro_bus *coroutines_bus, int channel, unsigned *data, unsigned capacity);
+int coro_bus_recv_v(const coro_bus *coroutines_bus, int channel, unsigned *data, unsigned capacity);
 
 /**
  * Same as coro_bus_recv_v(), but fails instantly if the channel
@@ -212,7 +212,7 @@ int coro_bus_recv_v(struct coro_bus *coroutines_bus, int channel, unsigned *data
  * @param coroutines_bus Bus where the channel is located.
  * @param channel Descriptor of the channel to recv data from.
  * @param data Array to save the received messages into.
- * @param count Capacity of @a data.
+ * @param capacity - Capacity of @a data.
  *
  * @retval >0 Success, how many messages were received. They are
  *     saved into @a data in the order of receiving. For example,
@@ -222,6 +222,6 @@ int coro_bus_recv_v(struct coro_bus *coroutines_bus, int channel, unsigned *data
  *     - CORO_BUS_ERR_NO_CHANNEL - the channel doesn't exist.
  *     - CORO_BUS_ERR_WOULD_BLOCK - the channel is empty.
  */
-int coro_bus_try_recv_v(struct coro_bus *coroutines_bus, int channel, unsigned *data, unsigned capacity);
+int coro_bus_try_recv_v(const coro_bus *coroutines_bus, int channel, unsigned *data, unsigned capacity);
 
 #endif /* Bonus 2 */
