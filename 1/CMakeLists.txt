@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.24)
+cmake_minimum_required(VERSION 3.5)
 project(CoroBus CXX)
 
 set(CMAKE_CXX_STANDARD 17)
@@ -29,7 +29,6 @@ if (ENABLE_LEAK_CHECKS)
     list(APPEND UTILS_SOURCES ${UTILS_DIR}/heap_help/heap_help.cpp)
     include_directories(${UTILS_DIR}/heap_help)
 endif ()
-
 
 if (NOT ENABLE_GLOB_SEARCH)
     set(TEST_SOURCES

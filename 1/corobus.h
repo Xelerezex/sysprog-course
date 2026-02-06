@@ -7,8 +7,8 @@
  * macros. It is important to define these macros here, in the
  * header, because it is used by tests.
  */
-#define NEED_BROADCAST 0
-#define NEED_BATCH 0
+#define NEED_BROADCAST 1
+#define NEED_BATCH 1
 
 enum coro_bus_error_code {
     CORO_BUS_ERR_NONE = 0,
@@ -61,7 +61,7 @@ void coro_bus_channel_close(coro_bus *current_coroutine_bus, int channel);
  * Send the given message to the specified channel. If the channel
  * is full, the function should suspend the current coroutine and
  * retry until success or until the channel is gone.
- * @param bus Bus where the channel is located.
+ * @param current_coroutine_bus Bus where the channel is located.
  * @param channel Descriptor of the channel to send data to.
  * @param data Data to send.
  *
@@ -69,13 +69,13 @@ void coro_bus_channel_close(coro_bus *current_coroutine_bus, int channel);
  * @retval -1 Error. Check coro_bus_errno() for reason.
  *     - CORO_BUS_ERR_NO_CHANNEL - the channel doesn't exist.
  */
-int coro_bus_send(struct coro_bus *bus, int channel, unsigned data);
+int coro_bus_send(coro_bus *current_coroutine_bus, int channel, unsigned data);
 
 /**
  * Same as coro_bus_send(), but if the channel is full, the
  * function immediately returns. It never suspends the current
  * coroutine.
- * @param bus Bus where the channel is located.
+ * @param current_coroutine_bus Bus where the channel is located.
  * @param channel Descriptor of the channel to send data to.
  * @param data Data to send.
  *
@@ -84,13 +84,13 @@ int coro_bus_send(struct coro_bus *bus, int channel, unsigned data);
  *     - CORO_BUS_ERR_NO_CHANNEL - the channel doesn't exist.
  *     - CORO_BUS_ERR_WOULD_BLOCK - the channel is full.
  */
-int coro_bus_try_send(struct coro_bus *bus, int channel, unsigned data);
+int coro_bus_try_send(coro_bus *current_coroutine_bus, int channel, unsigned data);
 
 /**
  * Recv a message from the specified channel. If the channel is
  * empty, the function should suspend the current coroutine and
  * retry until success or until the channel is gone.
- * @param bus Bus where the channel is located.
+ * @param current_coroutine_bus Bus where the channel is located.
  * @param channel Descriptor of the channel to send data to.
  * @param data Output parameter to save the data to.
  *
@@ -99,13 +99,13 @@ int coro_bus_try_send(struct coro_bus *bus, int channel, unsigned data);
  * @retval -1 Error. Check coro_bus_errno() for reason.
  *     - CORO_BUS_ERR_NO_CHANNEL - the channel doesn't exist.
  */
-int coro_bus_recv(struct coro_bus *bus, int channel, unsigned *data);
+int coro_bus_recv(coro_bus *current_coroutine_bus, int channel, unsigned *data);
 
 /**
  * Same as coro_bus_recv(), but if the channel is empty, the
  * function immediately returns. It never suspends the current
  * coroutine.
- * @param bus Bus where the channel is located.
+ * @param current_coroutine_bus Bus where the channel is located.
  * @param channel Descriptor of the channel to send data to.
  * @param data Output parameter to save the data to.
  *
@@ -115,7 +115,7 @@ int coro_bus_recv(struct coro_bus *bus, int channel, unsigned *data);
  *     - CORO_BUS_ERR_NO_CHANNEL - the channel doesn't exist.
  *     - CORO_BUS_ERR_WOULD_BLOCK - the channel is empty.
  */
-int coro_bus_try_recv(struct coro_bus *bus, int channel, unsigned *data);
+int coro_bus_try_recv(coro_bus *current_coroutine_bus, int channel, unsigned *data);
 
 #if NEED_BROADCAST /* Bonus 1 */
 
