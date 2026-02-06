@@ -266,30 +266,83 @@ int coro_bus_recv(coro_bus *coroutines_bus, const int channel, unsigned *data) {
     }
 }
 
-        if (!current_channel->message_queue.empty()) {
-            *data = current_channel->message_queue.front();
-            current_channel->message_queue.pop_front();
+#if NEED_BROADCAST
 
-            // Space appeared -> wake one sender.
-            wakeup_queue_wakeup_first(&current_channel->send_queue);
+int coro_bus_try_broadcast(coro_bus *coroutines_bus, const unsigned data) {
+    if (!is_bus_has_any_channels(coroutines_bus)) {
+        coro_bus_errno_set(CORO_BUS_ERR_NO_CHANNEL);
+        return -1;
+    }
 
-            // If still has data (e.g., after bulk send), chain-wakeup receivers.
-            if (!current_channel->message_queue.empty()) {
+    // if any existing channel is full -> fail, send nowhere
+    for (int index = 0; index < coroutines_bus->channel_count; ++index) {
+        const auto *current_channel = get_bus_channel(coroutines_bus, index);
+        if (current_channel == nullptr) {
+            continue;
+        }
+        if (current_channel->message_queue.size() >= current_channel->size_limit) {
+            coro_bus_errno_set(CORO_BUS_ERR_WOULD_BLOCK);
+            return -1;
+        }
+    }
+
+    // Commit to all.
+    for (int index = 0; index < coroutines_bus->channel_count; ++index) {
+        auto *current_channel = get_bus_channel(coroutines_bus, index);
+        if (current_channel == nullptr) {
+            continue;
+        }
+        current_channel->message_queue.push_back(data);
+        wakeup_queue_wakeup_first(&current_channel->recv_queue);
+    }
+
+    coro_bus_errno_set(CORO_BUS_ERR_NONE);
+    return 0;
+}
+
+int coro_bus_broadcast(coro_bus *coroutines_bus, const unsigned data) {
+    while (true) {
+        if (!is_bus_has_any_channels(coroutines_bus)) {
+            coro_bus_errno_set(CORO_BUS_ERR_NO_CHANNEL);
+            return -1;
+        }
+
+        // Find any full channel
+        int full_idx = -1;
+        for (int index = 0; index < coroutines_bus->channel_count; ++index) {
+            const auto *current_channel = get_bus_channel(coroutines_bus, index);
+            if (current_channel == nullptr)
+                continue;
+            if (current_channel->message_queue.size() >= current_channel->size_limit) {
+                full_idx = index;
+                break;
+            }
+        }
+
+        if (full_idx < 0) {
+            // All have space -> commit
+            for (int index = 0; index < coroutines_bus->channel_count; ++index) {
+                auto *current_channel = get_bus_channel(coroutines_bus, index);
+                if (current_channel == nullptr) {
+                    continue;
+                }
+                current_channel->message_queue.push_back(data);
                 wakeup_queue_wakeup_first(&current_channel->recv_queue);
             }
-
             coro_bus_errno_set(CORO_BUS_ERR_NONE);
             return 0;
         }
 
-        // Empty -> wait.
-        wakeup_queue_suspend_this(&current_channel->recv_queue);
-        // retry
+        // Wait for that channel to have space (or be closed), then retry
+        auto *current_channel = get_bus_channel(coroutines_bus, full_idx);
+        if (current_channel == nullptr) {
+            continue;
+        }
+        wakeup_queue_suspend_this(&current_channel->send_queue);
     }
 }
 
-// ReSharper disable once CppParameterMayBeConstPtrOrRef
-int coro_bus_try_recv(coro_bus *current_coroutine_bus, int channel, unsigned *data) {
+#endif    // NEED_BROADCAST
     assert(data != nullptr);
 
     coro_bus_channel *current_channel = get_bus_channel(current_coroutine_bus, channel);
