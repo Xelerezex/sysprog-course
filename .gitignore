@@ -12,3 +12,6 @@
 
 .idea
 CMakePresets.json
+__pycache__
+output_got.txt
+output_expected.txt
