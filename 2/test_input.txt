@@ -1,0 +1,5 @@
+f.close()\n" > test.py
+
+python3 test.py | exit 0
+
+cat test.txt
