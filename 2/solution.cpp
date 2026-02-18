@@ -5,10 +5,12 @@
 #include <cassert>
 #include <cerrno>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <iostream>
 #include <memory>
 #include <ostream>
+#include <sstream>
 
 #include "parser.h"
 
@@ -17,6 +19,16 @@ namespace utils {
 constexpr int success = 0;
 constexpr int failure = 1;
 constexpr int error_code = -1;
+
+enum PipeDescriptors : std::int32_t {
+    Read = 0,    // read end
+    Write = 1    // write end
+};
+
+struct Exit {
+    int code = 0;
+    bool should_exit = true;
+};
 
 int builtInChangeDirectory(const std::vector<std::string> &arguments) {
     int last_status = success;
@@ -60,6 +72,37 @@ int builtInChangeDirectory(const std::vector<std::string> &arguments) {
     return last_status;
 }
 
+Exit executeExit(const std::vector<std::string> &arguments) {
+    if (arguments.empty()) {
+        return Exit {0, true};
+    }
+
+    errno = success;
+    char *end_of_string = nullptr;
+    const long status = std::strtol(arguments.at(0).c_str(), &end_of_string, 10);
+
+    if (errno != 0 || end_of_string == arguments.at(0).c_str() || *end_of_string != '\0') {
+        std::cerr << "bash: exit: " << arguments.at(0) << ": numeric argument required\n";
+        return Exit {2, true};
+    }
+    if (arguments.size() > 1) {
+        std::cerr << "bash: exit: too many arguments\n";
+        return Exit {1, true};
+    }
+
+    return Exit {static_cast<int>(static_cast<unsigned char>(status)), true};
+}
+
+int builtinRunInChild(const command &cmd) {
+    if (cmd.exe == "cd") {
+        return builtInChangeDirectory(cmd.args);
+    }
+    if (cmd.exe == "exit") {
+        return executeExit(cmd.args).code;
+    }
+    return -1;
+}
+
 int statusToBash(const int status) {
     int result = success;
     if (WIFEXITED(status)) {
@@ -88,8 +131,13 @@ int waitForChild(const pid_t child_pid) {
     return statusToBash(status);
 }
 
-int executeRegularNonBackgroundCommand(command &command) {
-    int last_status = success;
+void reapAll(const std::vector<pid_t> &pids) {
+    for (const pid_t child_pid : pids) {
+        [[maybe_unused]] const auto result = waitForChild(child_pid);
+    }
+}
+
+std::vector<char *> generateArguments(command &command) {
     std::vector<char *> arguments;
     arguments.reserve(command.args.size() + 2);
 
@@ -102,6 +150,22 @@ int executeRegularNonBackgroundCommand(command &command) {
                    [](std::string &argument) -> char * { return argument.data(); });
     // End for arguments:
     arguments.push_back(nullptr);
+    return arguments;
+}
+
+void execute(const std::vector<char *> &arguments) {
+    if (const auto execute_result = execvp(arguments.at(0), arguments.data()); execute_result == error_code) {
+        if (errno == ENOENT) {
+            std::cerr << "bash: " << arguments.at(0) << ": command not found\n";
+            _exit(127);
+        }
+        std::cerr << "bash: " << arguments.at(0) << ": " << strerror(errno) << "\n";
+        _exit(126);
+    }
+}
+
+int executeRegularNonBackgroundCommand(command &command) {
+    const std::vector<char *> arguments = generateArguments(command);
 
     // if change directory -> do not fork()
     if (command.exe == "cd") {
@@ -120,13 +184,111 @@ int executeRegularNonBackgroundCommand(command &command) {
     }
 
     // child: (child_pid == 0)
-    if (const auto execute_result = execvp(arguments.at(0), arguments.data()); execute_result == error_code) {
-        if (errno == ENOENT) {
-            std::cerr << "bash: " << arguments.at(0) << ": command not found\n";
-            _exit(127);
+    execute(arguments);
+    return success;
+}
+
+void closePipe(const int pipe_descriptor) {
+    if (pipe_descriptor != error_code) {
+        close(pipe_descriptor);
+    }
+}
+
+int executePipelineNonBackgroundCommands(std::vector<command> &commands) {
+    if (commands.empty()) {
+        return success;
+    }
+
+    int last_status = error_code;
+    int previous_pipe_read_file_descriptor = error_code;
+    std::vector<pid_t> pids;
+
+    for (std::size_t index = 0; index < commands.size(); ++index) {
+        const bool is_not_last = index != (commands.size() - 1);
+        auto &current_command = commands.at(index);
+
+        // create new pipe
+        int pipes_file_descriptors[2];
+        pipes_file_descriptors[Read] = error_code;
+        pipes_file_descriptors[Write] = error_code;
+        if (is_not_last) {
+            if (pipe(pipes_file_descriptors) == error_code) {
+                std::cerr << "bash: pipe: " << strerror(errno) << "\n";
+                closePipe(previous_pipe_read_file_descriptor);
+                closePipe(pipes_file_descriptors[Read]);
+                closePipe(pipes_file_descriptors[Write]);
+                reapAll(pids);
+                return failure;
+            }
         }
-        std::cerr << "bash: " << arguments.at(0) << ": " << strerror(errno) << "\n";
-        _exit(126);
+
+        // fork process:
+        const pid_t child_pid = fork();
+        if (child_pid <= error_code) {
+            std::cerr << "bash: fork: " << strerror(errno) << "\n";
+            closePipe(previous_pipe_read_file_descriptor);
+            closePipe(pipes_file_descriptors[Read]);
+            closePipe(pipes_file_descriptors[Write]);
+            reapAll(pids);
+            return failure;
+        }
+
+        // in child:
+        if (child_pid == 0) {
+            if (previous_pipe_read_file_descriptor != error_code) {
+                if (dup2(previous_pipe_read_file_descriptor, STDIN_FILENO) == error_code) {
+                    std::cerr << "bash: dup2: " << strerror(errno) << "\n";
+                    _exit(failure);
+                }
+            }
+
+            if (is_not_last) {
+                if (dup2(pipes_file_descriptors[Write], STDOUT_FILENO) == error_code) {
+                    std::cerr << "bash: dup2: " << strerror(errno) << "\n";
+                    _exit(failure);
+                }
+            }
+
+            closePipe(pipes_file_descriptors[Read]);
+            closePipe(pipes_file_descriptors[Write]);
+            closePipe(previous_pipe_read_file_descriptor);
+
+            // Run built ins
+            if (const auto run_status = builtinRunInChild(current_command); run_status >= 0) {
+                _exit(run_status);
+            }
+
+            // execute
+            const std::vector<char *> arguments = generateArguments(current_command);
+            execute(arguments);
+            _exit(success);
+        }
+
+        // in parent:
+        pids.push_back(child_pid);
+
+        closePipe(previous_pipe_read_file_descriptor);
+        previous_pipe_read_file_descriptor = error_code;
+
+        if (is_not_last) {
+            // in not last:
+            closePipe(pipes_file_descriptors[Write]);
+            previous_pipe_read_file_descriptor = pipes_file_descriptors[Read];
+        } else {
+            // in last:
+            closePipe(pipes_file_descriptors[Read]);
+            closePipe(pipes_file_descriptors[Write]);
+        }
+    }
+
+    closePipe(previous_pipe_read_file_descriptor);
+    last_status = success;
+    for (std::size_t index = 0; index < pids.size(); ++index) {
+        const auto pid = pids.at(index);
+        const int result_wait = waitForChild(pid);
+        if (index == pids.size() - 1) {
+            last_status = result_wait;
+        }
     }
 
     return last_status;
@@ -134,20 +296,32 @@ int executeRegularNonBackgroundCommand(command &command) {
 
 int executeCommandLine(command_line *line) {
     assert(line != nullptr);
-
     int last_status = success;
 
     // dumb check: execute only one command from now
-    if (line->exprs.size() != 1 || line->out_type != OUTPUT_TYPE_STDOUT || line->is_background) {
+    if (line->exprs.empty() || line->out_type != OUTPUT_TYPE_STDOUT || line->is_background) {
         return last_status;
     }
+
+    // filter commands
+    std::vector<command> commands;
+    std::size_t pipes_count = 0;
     for (const auto &[type, command] : line->exprs) {
-        if (type != EXPR_TYPE_COMMAND) {
+        if (type == EXPR_TYPE_COMMAND) {
+            commands.push_back(command.value());
+        } else if (type == EXPR_TYPE_PIPE) {
+            ++pipes_count;
+        } else {
+            last_status = failure;
             return last_status;
         }
     }
+    if (commands.size() != pipes_count + 1) {
+        return failure;
+    }
 
     // main logic
+    /*
     if (line->out_type == OUTPUT_TYPE_STDOUT) {
         if (!line->is_background) {
             // printf("Is background: %d\n", static_cast<int>(line->is_background));
@@ -157,25 +331,18 @@ int executeCommandLine(command_line *line) {
     } else {
         assert(false);
     }
-
-    // printf("Expressions:\n");
-    for (auto &[type, command] : line->exprs) {
-        if (!command.has_value()) {
-            continue;
+    */
+    // run only single command
+    if (commands.size() == 1 && pipes_count == 0) {
+        if (!line->is_background) {
+            last_status = executeRegularNonBackgroundCommand(commands.at(0));
         }
-
-        if (type == EXPR_TYPE_COMMAND) {
-            if (!line->is_background) {
-                last_status = executeRegularNonBackgroundCommand(command.value());
-            }
-
-        } else if (type == EXPR_TYPE_PIPE) {
-        } else if (type == EXPR_TYPE_AND) {
-        } else if (type == EXPR_TYPE_OR) {
-        } else {
-            assert(false);
+    } else if (commands.size() > 1 && pipes_count > 0) {
+        if (!line->is_background) {
+            last_status = executePipelineNonBackgroundCommands(commands);
         }
     }
+
     return last_status;
 }
 
@@ -212,8 +379,8 @@ std::optional<std::string> readLineStdin() {
 int createAndExecuteCommand(parser *parser_object, const std::string &line) {
     int last_status = 0;
     parser_feed(parser_object, line.data(), static_cast<uint32_t>(line.size()));
-    command_line *current_line_raw = nullptr;
     while (true) {
+        command_line *current_line_raw = nullptr;
         const parser_error parser_error_code = parser_pop_next(parser_object, &current_line_raw);
         if (parser_error_code == PARSER_ERR_NONE && current_line_raw == nullptr) {
             break;
