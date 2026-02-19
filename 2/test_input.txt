@@ -1,2 +1,2 @@
-cd > dsa.txt
-cat dsa.txt
+exit abc > out.txt
+echo alive

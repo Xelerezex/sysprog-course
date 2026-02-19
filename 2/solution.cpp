@@ -33,8 +33,8 @@ enum PipeDescriptors : std::int32_t {
 };
 
 struct Exit {
-    int code = 0;
-    bool should_exit = true;
+    int last_status = 0;
+    bool terminate_shell = false;
 };
 /* -------------------------------------------- *** -------------------------------------------- */
 
@@ -69,8 +69,37 @@ int outputFileOpen(const output_type current_type, const std::string &current_fi
     return file_descriptor;
 }
 
-int builtInChangeDirectory(const std::vector<std::string> &arguments,
-                           const output_type current_type = OUTPUT_TYPE_STDOUT, const std::string &current_file = "") {
+int statusToBash(const int status) {
+    int result = success;
+    if (WIFEXITED(status)) {
+        result = WEXITSTATUS(status);
+    } else if (WIFSIGNALED(status)) {
+        result = 128 + WTERMSIG(status);
+    } else {
+        result = failure;
+    }
+    return result;
+}
+
+int waitForChild(const pid_t child_pid) {
+    int status;
+    while (true) {
+        const pid_t wait_pid = waitpid(child_pid, &status, 0);
+        if (wait_pid == error_code && errno == EINTR) {
+            errno = success;
+            continue;
+        }
+        if (wait_pid == error_code && errno != EINTR) {
+            return failure;
+        }
+        break;
+    }
+    return statusToBash(status);
+}
+
+int executeBuiltInChangeDirectory(const std::vector<std::string> &arguments,
+                                  const output_type current_type = OUTPUT_TYPE_STDOUT,
+                                  const std::string &current_file = "") {
     int last_status = success;
 
     // redirect cs if needed (bash do this)
@@ -128,64 +157,91 @@ int builtInChangeDirectory(const std::vector<std::string> &arguments,
     return last_status;
 }
 
-Exit executeExit(const std::vector<std::string> &arguments) {
+Exit executeParentBuiltInExit(const std::vector<std::string> &arguments) {
     if (arguments.empty()) {
-        return Exit {0, true};
+        return Exit {success, true};
     }
 
     errno = success;
     char *end_of_string = nullptr;
     const long status = std::strtol(arguments.at(0).c_str(), &end_of_string, 10);
 
-    if (errno != 0 || end_of_string == arguments.at(0).c_str() || *end_of_string != '\0') {
+    if (errno != success || end_of_string == arguments.at(0).c_str() || *end_of_string != '\0') {
         std::cerr << "bash: exit: " << arguments.at(0) << ": numeric argument required\n";
         return Exit {2, true};
     }
     if (arguments.size() > 1) {
         std::cerr << "bash: exit: too many arguments\n";
-        return Exit {1, true};
+        return Exit {failure, false};
     }
 
     return Exit {static_cast<int>(static_cast<unsigned char>(status)), true};
 }
 
-int builtinRunInChild(const command &cmd, const output_type current_type = OUTPUT_TYPE_STDOUT,
-                      const std::string &current_file = "") {
-    if (cmd.exe == "cd") {
-        return builtInChangeDirectory(cmd.args, current_type, current_file);
+Exit builtinRunInParent(const command &command, const output_type current_type, const std::string &current_file) {
+    if (command.exe == "cd") {
+        return Exit {executeBuiltInChangeDirectory(command.args, current_type, current_file), false};
     }
-    if (cmd.exe == "exit") {
-        return executeExit(cmd.args).code;
+    if (command.exe == "exit" && current_type == OUTPUT_TYPE_STDOUT) {
+        return executeParentBuiltInExit(command.args);
     }
-    return -1;
-}
-
-int statusToBash(const int status) {
-    int result = success;
-    if (WIFEXITED(status)) {
-        result = WEXITSTATUS(status);
-    } else if (WIFSIGNALED(status)) {
-        result = 128 + WTERMSIG(status);
-    } else {
-        result = failure;
-    }
-    return result;
-}
-
-int waitForChild(const pid_t child_pid) {
-    int status;
-    while (true) {
-        const pid_t wait_pid = waitpid(child_pid, &status, 0);
-        if (wait_pid == error_code && errno == EINTR) {
-            errno = success;
-            continue;
+    // ReSharper disable once CppDFAConstantConditions
+    if (command.exe == "exit" && current_type != OUTPUT_TYPE_STDOUT) {
+        // redirect cs if needed (bash do this)
+        // ReSharper disable once CppDFAUnreachableCode
+        // open or create file
+        int redirect_file_descriptors = outputFileOpen(current_type, current_file);
+        if (redirect_file_descriptors <= error_code) {
+            return Exit {failure, false};
         }
-        if (wait_pid == error_code && errno != EINTR) {
+        closeOpened(redirect_file_descriptors);
+        return Exit {executeParentBuiltInExit(command.args).last_status, false};
+    }
+    return Exit {error_code, false};
+}
+
+int executeChildBuiltInExit(const std::vector<std::string> &arguments) {
+    if (arguments.empty()) {
+        return success;
+    }
+
+    errno = success;
+    char *end_of_string = nullptr;
+    const long status = std::strtol(arguments.at(0).c_str(), &end_of_string, 10);
+
+    if (errno != success || end_of_string == arguments.at(0).c_str() || *end_of_string != '\0') {
+        std::cerr << "bash: exit: " << arguments.at(0) << ": numeric argument required\n";
+        return 2;
+    }
+    if (arguments.size() > 1) {
+        std::cerr << "bash: exit: too many arguments\n";
+        return failure;
+    }
+
+    return static_cast<unsigned char>(status);
+}
+
+int builtinRunInChild(const command &command, const output_type current_type, const std::string &current_file) {
+    if (command.exe == "cd") {
+        return executeBuiltInChangeDirectory(command.args, current_type, current_file);
+    }
+    // ReSharper disable once CppDFAConstantConditions
+    if (command.exe == "exit" && current_type == OUTPUT_TYPE_STDOUT) {
+        return executeChildBuiltInExit(command.args);
+    }
+    // ReSharper disable once CppDFAConstantConditions
+    if (command.exe == "exit" && current_type != OUTPUT_TYPE_STDOUT) {
+        // redirect cs if needed (bash do this)
+        // ReSharper disable once CppDFAUnreachableCode
+        // open or create file
+        int redirect_file_descriptors = outputFileOpen(current_type, current_file);
+        if (redirect_file_descriptors <= error_code) {
             return failure;
         }
-        break;
+        closeOpened(redirect_file_descriptors);
+        return executeChildBuiltInExit(command.args);
     }
-    return statusToBash(status);
+    return error_code;
 }
 
 void reapAll(const std::vector<pid_t> &pids) {
@@ -224,13 +280,12 @@ void execute(const std::vector<char *> &arguments) {
 /* -------------------------------------------- *** -------------------------------------------- */
 }    // namespace
 
-int executeRedirectedNonBackgroundCommand(command &command, const output_type current_type,
-                                          const std::string &current_file) {
+Exit executeNonBackgroundCommand(command &command, const output_type current_type, const std::string &current_file) {
     const std::vector<char *> arguments = generateArguments(command);
 
-    // if change directory -> do not fork()
-    if (command.exe == "cd") {
-        return builtInChangeDirectory(command.args, current_type, current_file);
+    // Run built ins
+    if (const auto status = builtinRunInParent(command, current_type, current_file); status.last_status >= 0) {
+        return status;
     }
 
     int redirect_file_descriptors = error_code;
@@ -238,7 +293,7 @@ int executeRedirectedNonBackgroundCommand(command &command, const output_type cu
         // open or create file
         redirect_file_descriptors = outputFileOpen(current_type, current_file);
         if (redirect_file_descriptors <= error_code) {
-            return failure;
+            return {failure, false};
         }
     }
 
@@ -247,12 +302,13 @@ int executeRedirectedNonBackgroundCommand(command &command, const output_type cu
     if (child_pid <= error_code) {
         std::cerr << "bash: fork: " << strerror(errno) << "\n";
         closeOpened(redirect_file_descriptors);
-        return failure;
+        return {failure, false};
     }
     // parent:
     if (child_pid > 0) {
         closeOpened(redirect_file_descriptors);
-        return waitForChild(child_pid);
+        const auto result = waitForChild(child_pid);
+        return {result, false};
     }
 
     // child: (child_pid == 0)
@@ -267,11 +323,11 @@ int executeRedirectedNonBackgroundCommand(command &command, const output_type cu
 
     // execute command
     execute(arguments);
-    return success;
+    return {success, false};
 }
 
-int executeRedirectedPipelineNonBackgroundCommands(std::vector<command> &commands, const output_type current_type,
-                                                   const std::string &current_file) {
+int executePipelineNonBackgroundCommands(std::vector<command> &commands, const output_type current_type,
+                                         const std::string &current_file) {
     if (commands.empty()) {
         return success;
     }
@@ -351,9 +407,9 @@ int executeRedirectedPipelineNonBackgroundCommands(std::vector<command> &command
             closeOpened(pipes_file_descriptors[Write]);
             closeOpened(previous_pipe_read_file_descriptor);
 
-            // Run built ins
-            if (const auto run_status = builtinRunInChild(current_command); run_status >= 0) {
-                _exit(run_status);
+            // Run built ins as child
+            if (const auto last_status = builtinRunInChild(current_command, OUTPUT_TYPE_STDOUT, ""); last_status >= 0) {
+                _exit(last_status);
             }
 
             // execute
@@ -393,13 +449,13 @@ int executeRedirectedPipelineNonBackgroundCommands(std::vector<command> &command
     return last_status;
 }
 
-int executeCommandLine(command_line *line) {
+Exit executeCommandLine(command_line *line) {
     assert(line != nullptr);
-    int last_status = success;
+    Exit exit_status = {success, false};
 
     // dumb check: execute only one command from now
     if (line->exprs.empty() || line->is_background) {
-        return last_status;
+        return exit_status;
     }
 
     // filter commands
@@ -411,26 +467,25 @@ int executeCommandLine(command_line *line) {
         } else if (type == EXPR_TYPE_PIPE) {
             ++pipes_count;
         } else {
-            last_status = failure;
-            return last_status;
+            return Exit {failure, false};
         }
     }
     if (commands.size() != pipes_count + 1) {
-        return failure;
+        return Exit {failure, false};
     }
 
     // main logic:
     if (commands.size() == 1 && pipes_count == 0) {    // <- run only single command:
         if (!line->is_background) {
-            last_status = executeRedirectedNonBackgroundCommand(commands.at(0), line->out_type, line->out_file);
+            exit_status = executeNonBackgroundCommand(commands.at(0), line->out_type, line->out_file);
         }
     } else if (commands.size() > 1 && pipes_count > 0) {    // <- run pipe:
         if (!line->is_background) {
-            last_status = executeRedirectedPipelineNonBackgroundCommands(commands, line->out_type, line->out_file);
+            exit_status.last_status = executePipelineNonBackgroundCommands(commands, line->out_type, line->out_file);
         }
     }
 
-    return last_status;
+    return exit_status;
 }
 
 std::optional<std::string> readLineStdin() {
@@ -463,8 +518,8 @@ std::optional<std::string> readLineStdin() {
     return buffer;
 }
 
-int createAndExecuteCommand(parser *parser_object, const std::string &line) {
-    int last_status = 0;
+Exit createAndExecuteCommand(parser *parser_object, const std::string &line) {
+    Exit last_exit_status = {success, false};
     parser_feed(parser_object, line.data(), static_cast<uint32_t>(line.size()));
     while (true) {
         command_line *current_line_raw = nullptr;
@@ -477,21 +532,25 @@ int createAndExecuteCommand(parser *parser_object, const std::string &line) {
         if (parser_error_code != PARSER_ERR_NONE) {
             continue;
         }
-        last_status = executeCommandLine(current_line_raw);
+        const auto &exit_status = executeCommandLine(current_line_raw);
+        last_exit_status = exit_status;
+        if (exit_status.terminate_shell) {
+            return exit_status;
+        }
     }
-    return last_status;
+    return last_exit_status;
 }
 
 }    // namespace utils
 
 int main() {
     parser *parser_object = parser_new();
-    int execution_code = 0;
+    utils::Exit exit_status = {utils::success, false};
 
     while (true) {
         const auto line_optional = utils::readLineStdin();
         if (!line_optional.has_value()) {
-            execution_code = 1;
+            exit_status = {utils::failure, false};
             break;
         }
         const auto &line = line_optional.value();
@@ -500,9 +559,12 @@ int main() {
         }
 
         // Command parse
-        execution_code = utils::createAndExecuteCommand(parser_object, line);
+        exit_status = utils::createAndExecuteCommand(parser_object, line);
+        if (exit_status.terminate_shell) {
+            break;
+        }
     }
 
     parser_delete(parser_object);
-    return execution_code;
+    return exit_status.last_status;
 }
