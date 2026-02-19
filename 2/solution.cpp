@@ -1,3 +1,5 @@
+#include <fcntl.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -16,10 +18,15 @@
 
 namespace utils {
 
+namespace {
+
+/* ------------------------------------------- codes ------------------------------------------- */
 constexpr int success = 0;
 constexpr int failure = 1;
 constexpr int error_code = -1;
+/* -------------------------------------------- *** -------------------------------------------- */
 
+/* ------------------------------------------- types ------------------------------------------- */
 enum PipeDescriptors : std::int32_t {
     Read = 0,    // read end
     Write = 1    // write end
@@ -29,19 +36,66 @@ struct Exit {
     int code = 0;
     bool should_exit = true;
 };
+/* -------------------------------------------- *** -------------------------------------------- */
 
-int builtInChangeDirectory(const std::vector<std::string> &arguments) {
+/* ------------------------------------------ helpers ------------------------------------------ */
+
+void closeOpened(int &pipe_descriptor) {
+    if (pipe_descriptor != error_code) {
+        close(pipe_descriptor);
+        pipe_descriptor = error_code;
+    }
+}
+
+// if outputFileOpen == error_code -> last_status = 1
+int outputFileOpen(const output_type current_type, const std::string &current_file) {
+    if (current_type == OUTPUT_TYPE_STDOUT) {
+        return error_code;
+    }
+
+    int flags = O_WRONLY | O_CREAT | O_CLOEXEC;
+    if (current_type == OUTPUT_TYPE_FILE_NEW) {
+        flags |= O_TRUNC;
+    } else if (current_type == OUTPUT_TYPE_FILE_APPEND) {
+        flags |= O_APPEND;
+    }
+
+    const int file_descriptor = open(current_file.c_str(), flags, 0666);
+    if (file_descriptor == error_code) {
+        std::cerr << "bash: " << current_file << ": " << strerror(errno) << "\n";
+        return error_code;
+    }
+
+    return file_descriptor;
+}
+
+int builtInChangeDirectory(const std::vector<std::string> &arguments,
+                           const output_type current_type = OUTPUT_TYPE_STDOUT, const std::string &current_file = "") {
     int last_status = success;
+
+    // redirect cs if needed (bash do this)
+    int redirect_file_descriptors = error_code;
+    if (current_type != OUTPUT_TYPE_STDOUT) {
+        // open or create file
+        redirect_file_descriptors = outputFileOpen(current_type, current_file);
+        if (redirect_file_descriptors <= error_code) {
+            return failure;
+        }
+        closeOpened(redirect_file_descriptors);
+    }
+
     // handling HOME
     if (arguments.empty()) {
         const auto home_path_raw = std::getenv("HOME");
         if (home_path_raw == nullptr) {
             std::cerr << "bash: cd: HOME not set\n";
+            closeOpened(redirect_file_descriptors);
             return failure;
         }
         const std::string home_path_variable(home_path_raw);
         if (home_path_variable.empty()) {
             std::cerr << "bash: cd: HOME not set\n";
+            closeOpened(redirect_file_descriptors);
             return failure;
         }
         // change directory of process
@@ -55,6 +109,7 @@ int builtInChangeDirectory(const std::vector<std::string> &arguments) {
         const std::string &path_variable = arguments.at(0);
         if (path_variable.empty()) {
             std::cerr << "bash: cd: No such file or directory\n";
+            closeOpened(redirect_file_descriptors);
             return failure;
         }
         // change directory of process
@@ -69,6 +124,7 @@ int builtInChangeDirectory(const std::vector<std::string> &arguments) {
         std::cerr << "bash: cd: too many arguments\n";
     }
 
+    closeOpened(redirect_file_descriptors);
     return last_status;
 }
 
@@ -93,9 +149,10 @@ Exit executeExit(const std::vector<std::string> &arguments) {
     return Exit {static_cast<int>(static_cast<unsigned char>(status)), true};
 }
 
-int builtinRunInChild(const command &cmd) {
+int builtinRunInChild(const command &cmd, const output_type current_type = OUTPUT_TYPE_STDOUT,
+                      const std::string &current_file = "") {
     if (cmd.exe == "cd") {
-        return builtInChangeDirectory(cmd.args);
+        return builtInChangeDirectory(cmd.args, current_type, current_file);
     }
     if (cmd.exe == "exit") {
         return executeExit(cmd.args).code;
@@ -164,47 +221,68 @@ void execute(const std::vector<char *> &arguments) {
     }
 }
 
-int executeRegularNonBackgroundCommand(command &command) {
+/* -------------------------------------------- *** -------------------------------------------- */
+}    // namespace
+
+int executeRedirectedNonBackgroundCommand(command &command, const output_type current_type,
+                                          const std::string &current_file) {
     const std::vector<char *> arguments = generateArguments(command);
 
     // if change directory -> do not fork()
     if (command.exe == "cd") {
-        return builtInChangeDirectory(command.args);
+        return builtInChangeDirectory(command.args, current_type, current_file);
+    }
+
+    int redirect_file_descriptors = error_code;
+    if (current_type != OUTPUT_TYPE_STDOUT) {
+        // open or create file
+        redirect_file_descriptors = outputFileOpen(current_type, current_file);
+        if (redirect_file_descriptors <= error_code) {
+            return failure;
+        }
     }
 
     // fork process
     const pid_t child_pid = fork();
     if (child_pid <= error_code) {
         std::cerr << "bash: fork: " << strerror(errno) << "\n";
+        closeOpened(redirect_file_descriptors);
         return failure;
     }
+    // parent:
     if (child_pid > 0) {
-        // parent:
+        closeOpened(redirect_file_descriptors);
         return waitForChild(child_pid);
     }
 
     // child: (child_pid == 0)
+    if (current_type != OUTPUT_TYPE_STDOUT) {
+        if (dup2(redirect_file_descriptors, STDOUT_FILENO) == error_code) {
+            std::cerr << "bash: dup2: " << strerror(errno) << "\n";
+            closeOpened(redirect_file_descriptors);
+            _exit(failure);
+        }
+        closeOpened(redirect_file_descriptors);
+    }
+
+    // execute command
     execute(arguments);
     return success;
 }
 
-void closePipe(const int pipe_descriptor) {
-    if (pipe_descriptor != error_code) {
-        close(pipe_descriptor);
-    }
-}
-
-int executePipelineNonBackgroundCommands(std::vector<command> &commands) {
+int executeRedirectedPipelineNonBackgroundCommands(std::vector<command> &commands, const output_type current_type,
+                                                   const std::string &current_file) {
     if (commands.empty()) {
         return success;
     }
 
-    int last_status = error_code;
     int previous_pipe_read_file_descriptor = error_code;
+    int redirect_file_descriptors = error_code;
     std::vector<pid_t> pids;
 
     for (std::size_t index = 0; index < commands.size(); ++index) {
-        const bool is_not_last = index != (commands.size() - 1);
+        const bool is_not_last = index != commands.size() - 1;
+        const bool is_last = !is_not_last;
         auto &current_command = commands.at(index);
 
         // create new pipe
@@ -214,9 +292,21 @@ int executePipelineNonBackgroundCommands(std::vector<command> &commands) {
         if (is_not_last) {
             if (pipe(pipes_file_descriptors) == error_code) {
                 std::cerr << "bash: pipe: " << strerror(errno) << "\n";
-                closePipe(previous_pipe_read_file_descriptor);
-                closePipe(pipes_file_descriptors[Read]);
-                closePipe(pipes_file_descriptors[Write]);
+                closeOpened(redirect_file_descriptors);
+                closeOpened(previous_pipe_read_file_descriptor);
+                closeOpened(pipes_file_descriptors[Read]);
+                closeOpened(pipes_file_descriptors[Write]);
+                reapAll(pids);
+                return failure;
+            }
+        } else if (is_last && current_type != OUTPUT_TYPE_STDOUT) {
+            // open or create file
+            redirect_file_descriptors = outputFileOpen(current_type, current_file);
+            if (redirect_file_descriptors <= error_code) {
+                closeOpened(redirect_file_descriptors);
+                closeOpened(pipes_file_descriptors[Read]);
+                closeOpened(pipes_file_descriptors[Write]);
+                closeOpened(previous_pipe_read_file_descriptor);
                 reapAll(pids);
                 return failure;
             }
@@ -226,9 +316,10 @@ int executePipelineNonBackgroundCommands(std::vector<command> &commands) {
         const pid_t child_pid = fork();
         if (child_pid <= error_code) {
             std::cerr << "bash: fork: " << strerror(errno) << "\n";
-            closePipe(previous_pipe_read_file_descriptor);
-            closePipe(pipes_file_descriptors[Read]);
-            closePipe(pipes_file_descriptors[Write]);
+            closeOpened(redirect_file_descriptors);
+            closeOpened(previous_pipe_read_file_descriptor);
+            closeOpened(pipes_file_descriptors[Read]);
+            closeOpened(pipes_file_descriptors[Write]);
             reapAll(pids);
             return failure;
         }
@@ -247,11 +338,18 @@ int executePipelineNonBackgroundCommands(std::vector<command> &commands) {
                     std::cerr << "bash: dup2: " << strerror(errno) << "\n";
                     _exit(failure);
                 }
+            } else if (is_last && current_type != OUTPUT_TYPE_STDOUT) {
+                if (dup2(redirect_file_descriptors, STDOUT_FILENO) == error_code) {
+                    std::cerr << "bash: dup2: " << strerror(errno) << "\n";
+                    closeOpened(redirect_file_descriptors);
+                    _exit(failure);
+                }
             }
 
-            closePipe(pipes_file_descriptors[Read]);
-            closePipe(pipes_file_descriptors[Write]);
-            closePipe(previous_pipe_read_file_descriptor);
+            closeOpened(redirect_file_descriptors);
+            closeOpened(pipes_file_descriptors[Read]);
+            closeOpened(pipes_file_descriptors[Write]);
+            closeOpened(previous_pipe_read_file_descriptor);
 
             // Run built ins
             if (const auto run_status = builtinRunInChild(current_command); run_status >= 0) {
@@ -267,22 +365,23 @@ int executePipelineNonBackgroundCommands(std::vector<command> &commands) {
         // in parent:
         pids.push_back(child_pid);
 
-        closePipe(previous_pipe_read_file_descriptor);
-        previous_pipe_read_file_descriptor = error_code;
+        closeOpened(previous_pipe_read_file_descriptor);
+        closeOpened(redirect_file_descriptors);
 
         if (is_not_last) {
             // in not last:
-            closePipe(pipes_file_descriptors[Write]);
+            closeOpened(pipes_file_descriptors[Write]);
             previous_pipe_read_file_descriptor = pipes_file_descriptors[Read];
         } else {
             // in last:
-            closePipe(pipes_file_descriptors[Read]);
-            closePipe(pipes_file_descriptors[Write]);
+            closeOpened(pipes_file_descriptors[Read]);
+            closeOpened(pipes_file_descriptors[Write]);
         }
     }
 
-    closePipe(previous_pipe_read_file_descriptor);
-    last_status = success;
+    closeOpened(redirect_file_descriptors);
+    closeOpened(previous_pipe_read_file_descriptor);
+    int last_status = error_code;
     for (std::size_t index = 0; index < pids.size(); ++index) {
         const auto pid = pids.at(index);
         const int result_wait = waitForChild(pid);
@@ -299,7 +398,7 @@ int executeCommandLine(command_line *line) {
     int last_status = success;
 
     // dumb check: execute only one command from now
-    if (line->exprs.empty() || line->out_type != OUTPUT_TYPE_STDOUT || line->is_background) {
+    if (line->exprs.empty() || line->is_background) {
         return last_status;
     }
 
@@ -320,26 +419,14 @@ int executeCommandLine(command_line *line) {
         return failure;
     }
 
-    // main logic
-    /*
-    if (line->out_type == OUTPUT_TYPE_STDOUT) {
+    // main logic:
+    if (commands.size() == 1 && pipes_count == 0) {    // <- run only single command:
         if (!line->is_background) {
-            // printf("Is background: %d\n", static_cast<int>(line->is_background));
+            last_status = executeRedirectedNonBackgroundCommand(commands.at(0), line->out_type, line->out_file);
         }
-    } else if (line->out_type == OUTPUT_TYPE_FILE_NEW) {
-    } else if (line->out_type == OUTPUT_TYPE_FILE_APPEND) {
-    } else {
-        assert(false);
-    }
-    */
-    // run only single command
-    if (commands.size() == 1 && pipes_count == 0) {
+    } else if (commands.size() > 1 && pipes_count > 0) {    // <- run pipe:
         if (!line->is_background) {
-            last_status = executeRegularNonBackgroundCommand(commands.at(0));
-        }
-    } else if (commands.size() > 1 && pipes_count > 0) {
-        if (!line->is_background) {
-            last_status = executePipelineNonBackgroundCommands(commands);
+            last_status = executeRedirectedPipelineNonBackgroundCommands(commands, line->out_type, line->out_file);
         }
     }
 

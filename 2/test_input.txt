@@ -1,1 +1,2 @@
-echo ok | cat -n | cat -n
+cd > dsa.txt
+cat dsa.txt
