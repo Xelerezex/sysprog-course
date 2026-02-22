@@ -462,18 +462,13 @@ Exit executeSinglePipeline(Pipeline &pipeline, const command_line *line, const b
     }
 
     if (pipeline.commands.size() == 1 && pipeline.pipes_count == 0) {    // <- run only single command:
-        if (!line->is_background) {
-            const output_type current_type = apply_redirect ? line->out_type : OUTPUT_TYPE_STDOUT;
-            const std::string &current_file = apply_redirect ? line->out_file : "";
-            exit_status = executeNonBackgroundCommand(pipeline.commands.at(0), current_type, current_file);
-        }
+        const output_type current_type = apply_redirect ? line->out_type : OUTPUT_TYPE_STDOUT;
+        const std::string &current_file = apply_redirect ? line->out_file : "";
+        exit_status = executeNonBackgroundCommand(pipeline.commands.at(0), current_type, current_file);
     } else if (pipeline.commands.size() > 1 && pipeline.pipes_count > 0) {    // <- run pipe:
-        if (!line->is_background) {
-            const output_type current_type = apply_redirect ? line->out_type : OUTPUT_TYPE_STDOUT;
-            const std::string &current_file = apply_redirect ? line->out_file : "";
-            exit_status.last_status =
-                    executePipelineNonBackgroundCommands(pipeline.commands, current_type, current_file);
-        }
+        const output_type current_type = apply_redirect ? line->out_type : OUTPUT_TYPE_STDOUT;
+        const std::string &current_file = apply_redirect ? line->out_file : "";
+        exit_status.last_status = executePipelineNonBackgroundCommands(pipeline.commands, current_type, current_file);
     }
     return exit_status;
 }
@@ -482,7 +477,7 @@ Exit executeCommandLine(command_line *line, const Exit last_exit_status) {
     assert(line != nullptr);
     Exit exit_status = last_exit_status;
     // dumb check: execute only one command from now
-    if (line->exprs.empty() || line->is_background) {
+    if (line->exprs.empty()) {
         return exit_status;
     }
 
@@ -535,35 +530,43 @@ Exit executeCommandLine(command_line *line, const Exit last_exit_status) {
 
     // main logic:
     for (std::size_t index = 0; index < pipelines.size(); ++index) {
+        // Execution command body:
+        // child: (child_pid == 0)
         auto &pipeline = pipelines.at(index);
         const bool is_last_pipeline = index == pipelines.size() - 1;
-        if (index == 0) {
-            exit_status = executeSinglePipeline(pipeline, line, is_last_pipeline, exit_status);
-            if (exit_status.terminate_shell) {
-                return exit_status;
-            }
-            continue;
-        }
 
-        // && -> run only if status == 0
-        if (operations.at(index - 1) == EXPR_TYPE_AND && exit_status.last_status == success) {
+        const bool is_first_pipeline = index == 0;
+        // && -> run only if status == 0 (run only if not first command)
+        const bool if_and_with_success =
+                is_first_pipeline ? false
+                                  : operations.at(index - 1) == EXPR_TYPE_AND && exit_status.last_status == success;
+        // || -> run only if status != 0 (run only if not first command)
+        const bool if_or_without_success =
+                is_first_pipeline ? false
+                                  : operations.at(index - 1) == EXPR_TYPE_OR && exit_status.last_status != success;
+        // Execution:
+        if (is_first_pipeline || if_and_with_success || if_or_without_success) {
             exit_status = executeSinglePipeline(pipeline, line, is_last_pipeline, exit_status);
-            if (exit_status.terminate_shell) {
-                return exit_status;
-            }
-            continue;
         }
-
-        // || -> run only if status != 0
-        if (operations.at(index - 1) == EXPR_TYPE_OR && exit_status.last_status != success) {
-            exit_status = executeSinglePipeline(pipeline, line, is_last_pipeline, exit_status);
-            if (exit_status.terminate_shell) {
-                return exit_status;
-            }
+        if (exit_status.terminate_shell) {
+            return exit_status;
         }
     }
 
     return exit_status;
+}
+
+void reapChildren() {
+    while (true) {
+        int state = 0;
+        const pid_t current_pid = waitpid(-1, &state, WNOHANG);
+        if (current_pid == error_code && errno == EINTR) {
+            continue;
+        }
+        if (current_pid <= 0) {
+            break;
+        }
+    }
 }
 
 Exit createAndExecuteCommand(parser *parser_object, const Exit current_last_exit_status) {
@@ -580,11 +583,32 @@ Exit createAndExecuteCommand(parser *parser_object, const Exit current_last_exit
         if (parser_error_code != PARSER_ERR_NONE) {
             continue;
         }
+        // wait for detached commands
+        reapChildren();
+
+        // if line is background process we fork
+        if (current_line_raw->is_background) {
+            // fork process:
+            const pid_t child_pid = fork();
+            if (child_pid <= error_code) {
+                std::cerr << "bash: fork: " << strerror(errno) << "\n";
+                return Exit {failure, false};
+            }
+            // parent: move to next command
+            if (child_pid > 0) {
+                last_exit_status.last_status = success;
+                continue;
+            }
+            // (child_pid == 0)
+            last_exit_status = executeCommandLine(current_line_raw, last_exit_status);
+            _exit(last_exit_status.last_status);
+        }
+
+        // if line is not background -> just execute
         last_exit_status = executeCommandLine(current_line_raw, last_exit_status);
     }
     return last_exit_status;
 }
-
 }    // namespace utils
 
 int main() {
@@ -595,9 +619,12 @@ int main() {
     char chunk_buffer[chunk_size];
 
     while (!exit_status.terminate_shell) {
+        utils::reapChildren();    // wait for detached commands
+
         const ssize_t bytes_to_read = read(STDIN_FILENO, chunk_buffer, chunk_size);
         if (bytes_to_read == 0) {
             // EOF:
+            utils::reapChildren();    // wait for detached commands
             break;
         }
 
@@ -614,6 +641,7 @@ int main() {
         // Command parse
         parser_feed(parser_object, chunk_buffer, static_cast<uint32_t>(bytes_to_read));
         exit_status = utils::createAndExecuteCommand(parser_object, exit_status);
+        utils::reapChildren();    // wait for detached commands
     }
 
     // optional final drain

@@ -1,1 +1,5 @@
-echo 100 | grep 1 && echo 200 | grep 2
+mkfifo chan.txt
+echo '100' > chan.txt &
+echo 'foreground work'
+cat chan.txt
+rm chan.txt
