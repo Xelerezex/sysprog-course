@@ -1,2 +1,1 @@
-exit abc > out.txt
-echo alive
+echo 100 | grep 1 && echo 200 | grep 2

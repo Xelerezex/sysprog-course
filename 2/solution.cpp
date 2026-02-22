@@ -36,6 +36,11 @@ struct Exit {
     int last_status = 0;
     bool terminate_shell = false;
 };
+
+struct Pipeline {
+    std::vector<command> commands;
+    std::size_t pipes_count = 0;
+};
 /* -------------------------------------------- *** -------------------------------------------- */
 
 /* ------------------------------------------ helpers ------------------------------------------ */
@@ -449,6 +454,30 @@ int executePipelineNonBackgroundCommands(std::vector<command> &commands, const o
     return last_status;
 }
 
+Exit executeSinglePipeline(Pipeline &pipeline, const command_line *line, const bool apply_redirect,
+                           const Exit last_exit_status) {
+    Exit exit_status = last_exit_status;
+    if (exit_status.terminate_shell) {
+        return exit_status;
+    }
+
+    if (pipeline.commands.size() == 1 && pipeline.pipes_count == 0) {    // <- run only single command:
+        if (!line->is_background) {
+            const output_type current_type = apply_redirect ? line->out_type : OUTPUT_TYPE_STDOUT;
+            const std::string &current_file = apply_redirect ? line->out_file : "";
+            exit_status = executeNonBackgroundCommand(pipeline.commands.at(0), current_type, current_file);
+        }
+    } else if (pipeline.commands.size() > 1 && pipeline.pipes_count > 0) {    // <- run pipe:
+        if (!line->is_background) {
+            const output_type current_type = apply_redirect ? line->out_type : OUTPUT_TYPE_STDOUT;
+            const std::string &current_file = apply_redirect ? line->out_file : "";
+            exit_status.last_status =
+                    executePipelineNonBackgroundCommands(pipeline.commands, current_type, current_file);
+        }
+    }
+    return exit_status;
+}
+
 Exit executeCommandLine(command_line *line, const Exit last_exit_status) {
     assert(line != nullptr);
     Exit exit_status = last_exit_status;
@@ -458,6 +487,8 @@ Exit executeCommandLine(command_line *line, const Exit last_exit_status) {
     }
 
     // filter commands
+    std::vector<Pipeline> pipelines;
+    std::vector<expr_type> operations;
     std::vector<command> commands;
     std::size_t pipes_count = 0;
     for (const auto &[type, command] : line->exprs) {
@@ -465,56 +496,74 @@ Exit executeCommandLine(command_line *line, const Exit last_exit_status) {
             commands.push_back(command.value());
         } else if (type == EXPR_TYPE_PIPE) {
             ++pipes_count;
+        } else if (type == EXPR_TYPE_AND) {
+            Pipeline new_pipeline {std::move(commands), pipes_count};
+            pipes_count = 0;
+            commands.clear();
+            if (new_pipeline.commands.size() != new_pipeline.pipes_count + 1) {
+                return Exit {failure, false};
+            }
+            pipelines.push_back(std::move(new_pipeline));
+            operations.push_back(EXPR_TYPE_AND);
+        } else if (type == EXPR_TYPE_OR) {
+            Pipeline new_pipeline {std::move(commands), pipes_count};
+            pipes_count = 0;
+            commands.clear();
+            if (new_pipeline.commands.size() != new_pipeline.pipes_count + 1) {
+                return Exit {failure, false};
+            }
+            pipelines.push_back(std::move(new_pipeline));
+            operations.push_back(EXPR_TYPE_OR);
         } else {
             return Exit {failure, false};
         }
     }
-    if (commands.size() != pipes_count + 1) {
+    // append last pipeline
+    if (!commands.empty()) {
+        Pipeline new_pipeline {std::move(commands), pipes_count};
+        pipes_count = 0;
+        commands.clear();
+        if (new_pipeline.commands.size() != new_pipeline.pipes_count + 1) {
+            return Exit {failure, false};
+        }
+        pipelines.push_back(std::move(new_pipeline));
+    }
+    // invariant check
+    if (pipelines.size() != operations.size() + 1) {
         return Exit {failure, false};
     }
 
     // main logic:
-    if (commands.size() == 1 && pipes_count == 0) {    // <- run only single command:
-        if (!line->is_background) {
-            exit_status = executeNonBackgroundCommand(commands.at(0), line->out_type, line->out_file);
+    for (std::size_t index = 0; index < pipelines.size(); ++index) {
+        auto &pipeline = pipelines.at(index);
+        const bool is_last_pipeline = index == pipelines.size() - 1;
+        if (index == 0) {
+            exit_status = executeSinglePipeline(pipeline, line, is_last_pipeline, exit_status);
+            if (exit_status.terminate_shell) {
+                return exit_status;
+            }
+            continue;
         }
-    } else if (commands.size() > 1 && pipes_count > 0) {    // <- run pipe:
-        if (!line->is_background) {
-            exit_status.last_status = executePipelineNonBackgroundCommands(commands, line->out_type, line->out_file);
+
+        // && -> run only if status == 0
+        if (operations.at(index - 1) == EXPR_TYPE_AND && exit_status.last_status == success) {
+            exit_status = executeSinglePipeline(pipeline, line, is_last_pipeline, exit_status);
+            if (exit_status.terminate_shell) {
+                return exit_status;
+            }
+            continue;
+        }
+
+        // || -> run only if status != 0
+        if (operations.at(index - 1) == EXPR_TYPE_OR && exit_status.last_status != success) {
+            exit_status = executeSinglePipeline(pipeline, line, is_last_pipeline, exit_status);
+            if (exit_status.terminate_shell) {
+                return exit_status;
+            }
         }
     }
 
     return exit_status;
-}
-
-std::optional<std::string> readLineStdin() {
-    std::string buffer;
-    char character;
-
-    while (true) {
-        constexpr std::size_t one_byte = 1;
-        const ssize_t bytes_to_read = read(STDIN_FILENO, &character, one_byte);
-        if (bytes_to_read == 0) {
-            break;
-        }
-        if (bytes_to_read < 0) {
-            // retry:
-            if (errno == EINTR) {
-                errno = 0;
-                continue;
-            }
-            // error:
-            return std::nullopt;
-        }
-
-        // append values on success
-        buffer.push_back(character);
-        if (character == '\n') {
-            break;
-        }
-    }
-
-    return buffer;
 }
 
 Exit createAndExecuteCommand(parser *parser_object, const Exit current_last_exit_status) {
