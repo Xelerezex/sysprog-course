@@ -449,10 +449,9 @@ int executePipelineNonBackgroundCommands(std::vector<command> &commands, const o
     return last_status;
 }
 
-Exit executeCommandLine(command_line *line) {
+Exit executeCommandLine(command_line *line, const Exit last_exit_status) {
     assert(line != nullptr);
-    Exit exit_status = {success, false};
-
+    Exit exit_status = last_exit_status;
     // dumb check: execute only one command from now
     if (line->exprs.empty() || line->is_background) {
         return exit_status;
@@ -518,10 +517,10 @@ std::optional<std::string> readLineStdin() {
     return buffer;
 }
 
-Exit createAndExecuteCommand(parser *parser_object, const std::string &line) {
-    Exit last_exit_status = {success, false};
-    parser_feed(parser_object, line.data(), static_cast<uint32_t>(line.size()));
-    while (true) {
+Exit createAndExecuteCommand(parser *parser_object, const Exit current_last_exit_status) {
+    Exit last_exit_status = current_last_exit_status;
+
+    while (!last_exit_status.terminate_shell) {
         command_line *current_line_raw = nullptr;
         const parser_error parser_error_code = parser_pop_next(parser_object, &current_line_raw);
         if (parser_error_code == PARSER_ERR_NONE && current_line_raw == nullptr) {
@@ -532,11 +531,7 @@ Exit createAndExecuteCommand(parser *parser_object, const std::string &line) {
         if (parser_error_code != PARSER_ERR_NONE) {
             continue;
         }
-        const auto &exit_status = executeCommandLine(current_line_raw);
-        last_exit_status = exit_status;
-        if (exit_status.terminate_shell) {
-            return exit_status;
-        }
+        last_exit_status = executeCommandLine(current_line_raw, last_exit_status);
     }
     return last_exit_status;
 }
@@ -547,23 +542,33 @@ int main() {
     parser *parser_object = parser_new();
     utils::Exit exit_status = {utils::success, false};
 
-    while (true) {
-        const auto line_optional = utils::readLineStdin();
-        if (!line_optional.has_value()) {
-            exit_status = {utils::failure, false};
+    constexpr std::size_t chunk_size = 16 * 1024;
+    char chunk_buffer[chunk_size];
+
+    while (!exit_status.terminate_shell) {
+        const ssize_t bytes_to_read = read(STDIN_FILENO, chunk_buffer, chunk_size);
+        if (bytes_to_read == 0) {
+            // EOF:
             break;
         }
-        const auto &line = line_optional.value();
-        if (line.empty()) {
+
+        if (bytes_to_read < 0) {
+            // retry:
+            if (errno == EINTR) {
+                errno = 0;
+                continue;
+            }
+            exit_status = {utils::failure, false};
             break;
         }
 
         // Command parse
-        exit_status = utils::createAndExecuteCommand(parser_object, line);
-        if (exit_status.terminate_shell) {
-            break;
-        }
+        parser_feed(parser_object, chunk_buffer, static_cast<uint32_t>(bytes_to_read));
+        exit_status = utils::createAndExecuteCommand(parser_object, exit_status);
     }
+
+    // optional final drain
+    exit_status = utils::createAndExecuteCommand(parser_object, exit_status);
 
     parser_delete(parser_object);
     return exit_status.last_status;
