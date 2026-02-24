@@ -409,11 +409,22 @@ int ufs_close(const int file_descriptor) {
     set_ufs_errno(UFS_ERR_NO_ERR);
     if (!isValidFileDescriptor(file_descriptor)) {
         set_ufs_errno(UFS_ERR_NO_FILE);
-        return -1;
+        return failure;
     }
 
-    set_ufs_errno(UFS_ERR_NOT_IMPLEMENTED);
-    return -1;
+    const auto descriptor_index = file_descriptor - 1;
+    auto &descriptor_pointer = file_descriptors_table[descriptor_index];
+    const auto file = descriptor_pointer->at_file;
+    assert(file != nullptr);
+    // remove from table
+    descriptor_pointer.reset(nullptr);
+    --file->references;
+    if (file->references == 0 && file->is_this_deleted == true) {
+        freeAllBlocks(file);
+        delete file;
+    }
+
+    return success;
 }
 
 int ufs_delete(const char *filename) {
