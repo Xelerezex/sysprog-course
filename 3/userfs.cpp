@@ -463,8 +463,81 @@ int ufs_resize(const int file_descriptor, const std::size_t new_size) {
         return -1;
     }
 
-    set_ufs_errno(UFS_ERR_NOT_IMPLEMENTED);
-    return -1;
+    const auto descriptor_index = file_descriptor - 1;
+    const auto &descriptor_pointer = file_descriptors_table[descriptor_index];
+    if (!descriptor_pointer->writable) {
+        set_ufs_errno(UFS_ERR_NO_PERMISSION);
+        return failure;
+    }
+    const auto current_file = descriptor_pointer->at_file;
+    assert(current_file != nullptr);
+    std::size_t old_size = current_file->size;
+    if (new_size == old_size) {
+        return static_cast<ssize_t>(success);
+    }
+
+    // shrink:
+    if (new_size < old_size) {
+        std::size_t needed_blocks;
+        if (new_size != 0) {
+            needed_blocks = (new_size + BLOCK_SIZE - 1) / BLOCK_SIZE;
+        } else {
+            needed_blocks = 0;
+        }
+
+        if (needed_blocks == 0) {
+            freeAllBlocks(current_file);
+        } else {
+            while (current_file->block_count > needed_blocks) {
+                const auto last_block = rlist_last_entry(&current_file->blocks, block, in_block_list);
+                rlist_del(&last_block->in_block_list);
+                delete last_block;
+                --current_file->block_count;
+            }
+            if (new_size % BLOCK_SIZE != 0) {
+                const auto last_block = rlist_last_entry(&current_file->blocks, block, in_block_list);
+                const auto current_offset = new_size % BLOCK_SIZE;
+                std::memset(last_block->memory + current_offset, 0, BLOCK_SIZE - current_offset);
+            }
+        }
+        current_file->size = new_size;
+
+        // clamp all descriptors
+        for (const auto &descriptor : file_descriptors_table) {
+            if (descriptor == nullptr) {
+                continue;
+            }
+            if (descriptor->at_file != current_file) {
+                continue;
+            }
+            if (descriptor->cursor_position >= new_size) {
+                setCursor(descriptor, new_size);
+            }
+        }
+    }
+    // expand
+    if (new_size >= old_size) {
+        if (!ensureEnoughCapacity(descriptor_pointer->at_file, new_size)) {
+            set_ufs_errno(UFS_ERR_NO_MEM);
+            return failure;
+        }
+        if (old_size > 0 && (old_size % BLOCK_SIZE) != 0) {
+            const std::size_t idx = old_size / BLOCK_SIZE;
+            const std::size_t off = old_size % BLOCK_SIZE;
+
+            block *current_block = firstBlock(current_file);
+            for (std::size_t index = 0; current_block != nullptr && index < idx; ++index) {
+                current_block = nextBlock(current_file, current_block);
+            }
+
+            if (current_block != nullptr) {
+                std::memset(current_block->memory + off, 0, BLOCK_SIZE - off);
+            }
+        }
+        current_file->size = new_size;
+    }
+
+    return static_cast<ssize_t>(success);
 }
 
 #endif
