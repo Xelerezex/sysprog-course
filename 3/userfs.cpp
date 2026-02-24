@@ -1,58 +1,66 @@
 #include "userfs.h"
 
-#include <stddef.h>
-
+#include <cstddef>
+#include <cstring>
 #include <string>
 #include <vector>
 
 #include "rlist.h"
 
+namespace {
+
+/* ------------------------------------------- Types ------------------------------------------- */
 enum {
     BLOCK_SIZE = 512,
     MAX_FILE_SIZE = 1024 * 1024 * 100,
 };
 
-/** Global error code. Set from any function on any error. */
-static ufs_error_code ufs_error_code = UFS_ERR_NO_ERR;
-
+// Block memory.
 struct block {
-    /** Block memory. */
-    char memory[BLOCK_SIZE];
-    /** A link in the block list of the owner-file. */
-    rlist in_block_list = RLIST_LINK_INITIALIZER;
+    explicit block() { std::memset(memory, 0, BLOCK_SIZE); }
 
-    /* PUT HERE OTHER MEMBERS */
+    char memory[BLOCK_SIZE] = {0};
+    rlist in_block_list = RLIST_LINK_INITIALIZER;
 };
 
 struct file {
-    /**
-     * Doubly-linked intrusive list of file blocks. Intrusiveness of the
-     * list gives you the full control over the lifetime of the items in the
-     * list without having to use double pointers with performance penalty.
-     */
     rlist blocks = RLIST_HEAD_INITIALIZER(blocks);
-    /** How many file descriptors are opened on the file. */
-    int refs = 0;
-    /** File name. */
+    // File name
     std::string name;
-    /** A link in the global file list. */
+    // How many file descriptors are opened on the file
+    int references = 0;
+    // Number of allocated blocks
+    std::size_t block_count = 0;
+    // Size of this file
+    std::size_t size = 0;
+    // Is this file deleted
+    bool is_this_deleted = false;
+    // A link in the global file list
     rlist in_file_list = RLIST_LINK_INITIALIZER;
-
-    /* PUT HERE OTHER MEMBERS */
 };
 
+struct filedesc {
+    // Descriptor of this file
+    file *at_file = nullptr;
+    // Current cursor position
+    std::size_t position = 0;
+    // Current block
+    block *current_block = nullptr;
+    // Current offset
+    std::size_t current_offset = 0;
+    // Permissions:
+    bool readable = false;
+    bool writable = false;
+};
+/* -------------------------------------------- *** -------------------------------------------- */
+
+/* ----------------------------------------- Variables ----------------------------------------- */
 /**
  * Intrusive list of all files. In this case the intrusiveness of the list also
  * grants the ability to remove items from any position in O(1) complexity
  * without having to know their iterator.
  */
-static rlist file_list = RLIST_HEAD_INITIALIZER(file_list);
-
-struct filedesc {
-    file *atfile;
-
-    /* PUT HERE OTHER MEMBERS */
-};
+rlist file_list = RLIST_HEAD_INITIALIZER(file_list);
 
 /**
  * An array of file descriptors. When a file descriptor is
@@ -60,67 +68,154 @@ struct filedesc {
  * closed, its place in this array is set to NULL and can be
  * taken by next ufs_open() call.
  */
-static std::vector<filedesc *> file_descriptors;
+std::vector<filedesc *> file_descriptors_table;
 
-enum ufs_error_code ufs_errno() {
-    return ufs_error_code;
+// Global error code. Set from any function on any error.
+ufs_error_code ufs_last_error_code = UFS_ERR_NO_ERR;
+/* -------------------------------------------- *** -------------------------------------------- */
+
+/* ------------------------------------------ Helpers ------------------------------------------ */
+void set_ufs_errno(const ufs_error_code new_errno) {
+    ufs_last_error_code = new_errno;
 }
 
-int ufs_open(const char *filename, int flags) {
+[[maybe_unused]] auto findFile(const char *filename) -> file * {
+    if (filename == nullptr) {
+        return nullptr;
+    }
+
+    file *result = nullptr;
+    rlist_foreach_entry(result, &file_list, in_file_list) {
+        if (result->name == filename) {
+            return result;
+        }
+    }
+    return nullptr;
+}
+
+auto firstBlock(const file *current_file) -> block * {
+    if (current_file == nullptr || rlist_empty(&current_file->blocks)) {
+        return nullptr;
+    }
+    return rlist_first_entry(&current_file->blocks, block, in_block_list);
+}
+
+[[maybe_unused]] auto nextBlock(const file *current_file, block *current_block) -> block * {
+    if (current_file == nullptr || current_block == nullptr) {
+        return nullptr;
+    }
+    // is head check
+    if (current_block->in_block_list.next == &current_file->blocks) {
+        return nullptr;
+    }
+    return rlist_next_entry(current_block, in_block_list);
+}
+
+[[maybe_unused]] bool appendBlock(file *current_file) {
+    if (current_file == nullptr) {
+        return false;
+    }
+
+    const auto new_block = new block();
+    rlist_add_tail(&current_file->blocks, &new_block->in_block_list);
+    ++current_file->block_count;
+    return true;
+}
+
+[[maybe_unused]] bool freeAllBlocks(file *current_file) {
+    if (current_file == nullptr) {
+        return false;
+    }
+
+    while (!rlist_empty(&current_file->blocks)) {
+        const auto head_block = firstBlock(current_file);
+        rlist_del(&head_block->in_block_list);
+        delete head_block;
+    }
+    current_file->block_count = 0;
+
+    return true;
+}
+
+/* -------------------------------------------- *** -------------------------------------------- */
+}    // namespace
+
+ufs_error_code ufs_errno() {
+    return ufs_last_error_code;
+}
+
+int ufs_open(const char *filename, const int flags) {
     /* IMPLEMENT THIS FUNCTION */
+    /*
+    rlist_create(&file_list);
+
+    auto *a = new file;
+    a->name = "A";
+    rlist_create(&a->in_file_list);
+
+    auto *b = new file;
+    b->name = "B";
+    rlist_create(&b->in_file_list);
+
+    rlist_add_tail_entry(&file_list, a, in_file_list);
+    rlist_add_tail_entry(&file_list, b, in_file_list);
+
+    [[maybe_unused]] file *f = findFile("B");
+    */
+
     (void)filename;
     (void)flags;
     (void)file_list;
-    (void)file_descriptors;
-    ufs_error_code = UFS_ERR_NOT_IMPLEMENTED;
+    (void)file_descriptors_table;
+    set_ufs_errno(UFS_ERR_NOT_IMPLEMENTED);
     return -1;
 }
 
-ssize_t ufs_write(int fd, const char *buf, size_t size) {
+ssize_t ufs_write(const int file_descriptor, const char *buffer, const std::size_t size) {
     /* IMPLEMENT THIS FUNCTION */
-    (void)fd;
-    (void)buf;
+    (void)file_descriptor;
+    (void)buffer;
     (void)size;
-    ufs_error_code = UFS_ERR_NOT_IMPLEMENTED;
+    set_ufs_errno(UFS_ERR_NOT_IMPLEMENTED);
     return -1;
 }
 
-ssize_t ufs_read(int fd, char *buf, size_t size) {
+ssize_t ufs_read(const int file_descriptor, char *buffer, const std::size_t size) {
     /* IMPLEMENT THIS FUNCTION */
-    (void)fd;
-    (void)buf;
+    (void)file_descriptor;
+    (void)buffer;
     (void)size;
-    ufs_error_code = UFS_ERR_NOT_IMPLEMENTED;
+    set_ufs_errno(UFS_ERR_NOT_IMPLEMENTED);
     return -1;
 }
 
-int ufs_close(int fd) {
+int ufs_close(const int file_descriptor) {
     /* IMPLEMENT THIS FUNCTION */
-    (void)fd;
-    ufs_error_code = UFS_ERR_NOT_IMPLEMENTED;
+    (void)file_descriptor;
+    set_ufs_errno(UFS_ERR_NOT_IMPLEMENTED);
     return -1;
 }
 
 int ufs_delete(const char *filename) {
     /* IMPLEMENT THIS FUNCTION */
     (void)filename;
-    ufs_error_code = UFS_ERR_NOT_IMPLEMENTED;
+    set_ufs_errno(UFS_ERR_NOT_IMPLEMENTED);
     return -1;
 }
 
 #if NEED_RESIZE
 
-int ufs_resize(int fd, size_t new_size) {
+int ufs_resize(const int file_descriptor, const std::size_t new_size) {
     /* IMPLEMENT THIS FUNCTION */
-    (void)fd;
+    (void)file_descriptor;
     (void)new_size;
-    ufs_error_code = UFS_ERR_NOT_IMPLEMENTED;
+    set_ufs_errno(UFS_ERR_NOT_IMPLEMENTED);
     return -1;
 }
 
 #endif
 
-void ufs_destroy(void) {
+void ufs_destroy() {
     /*
      * The file_descriptors array is likely to leak even if
      * you resize it to zero or call clear(). This is because
@@ -130,4 +225,5 @@ void ufs_destroy(void) {
      * The recommended way of freeing the memory is to swap()
      * the vector with a temporary empty vector.
      */
+    set_ufs_errno(UFS_ERR_NOT_IMPLEMENTED);
 }

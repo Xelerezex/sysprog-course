@@ -2,6 +2,8 @@
 
 #include <sys/types.h>
 
+#include <cstddef>
+
 /**
  * User-defined in-memory filesystem. It is as simple as possible.
  * Each file lies in the memory as an array of blocks. A file
@@ -83,8 +85,8 @@ int ufs_open(const char *filename, int flags);
 
 /**
  * Write data to the file.
- * @param fd File descriptor from ufs_open().
- * @param buf Buffer to write.
+ * @param file_descriptor File descriptor from ufs_open().
+ * @param buffer Buffer to write.
  * @param size Size of @a buf.
  *
  * @retval > 0 How many bytes were written.
@@ -92,12 +94,12 @@ int ufs_open(const char *filename, int flags);
  *     - UFS_ERR_NO_FILE - invalid file descriptor.
  *     - UFS_ERR_NO_MEM - not enough memory.
  */
-ssize_t ufs_write(int fd, const char *buf, size_t size);
+ssize_t ufs_write(int file_descriptor, const char *buffer, std::size_t size);
 
 /**
  * Read data from the file.
- * @param fd File descriptor from ufs_open().
- * @param buf Buffer to read into.
+ * @param file_descriptor File descriptor from ufs_open().
+ * @param buffer Buffer to read into.
  * @param size Maximum bytes to read.
  *
  * @retval > 0 How many bytes were read.
@@ -105,16 +107,16 @@ ssize_t ufs_write(int fd, const char *buf, size_t size);
  * @retval -1 Error occurred. Check ufs_errno() for a code.
  *     - UFS_ERR_NO_FILE - invalid file descriptor.
  */
-ssize_t ufs_read(int fd, char *buf, size_t size);
+ssize_t ufs_read(int file_descriptor, char *buffer, std::size_t size);
 
 /**
  * Close a file.
- * @param fd File descriptor from ufs_open().
+ * @param file_descriptor File descriptor from ufs_open().
  * @retval 0 Success.
  * @retval -1 Error occurred. Check ufs_errno() for a code.
  *     - UFS_ERR_NO_FILE - invalid file descriptor.
  */
-int ufs_close(int fd);
+int ufs_close(int file_descriptor);
 
 /**
  * Delete a file by its name. Note, that it is allowed to drop the
@@ -140,7 +142,7 @@ int ufs_delete(const char *filename);
  * the blocks are truncated. Opened file descriptors behind the
  * new file size should proceed from the new file end.
  *
- * @param fd File descriptor from ufs_open().
+ * @param file_descriptor File descriptor from ufs_open().
  * @param new_size New file size.
  * @retval 0 Success.
  * @retval -1 Error occurred.
@@ -150,7 +152,7 @@ int ufs_delete(const char *filename);
  *     - UFS_ERR_NO_MEM - not enough memory. Can appear only when
  *       @a new_size is bigger than the current size.
  */
-int ufs_resize(int fd, size_t new_size);
+int ufs_resize(int file_descriptor, std::size_t new_size);
 
 #endif
 
@@ -159,4 +161,4 @@ int ufs_resize(int fd, size_t new_size);
  * the files. After the destruction neither of the ufs functions are supposed to
  * be used. Purpose of the destruction is to reclaim all the dynamic memory.
  */
-void ufs_destroy(void);
+void ufs_destroy();
