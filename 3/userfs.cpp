@@ -86,6 +86,7 @@ void set_ufs_errno(const ufs_error_code new_errno) {
 }
 
 auto findFile(const char *filename) -> file * {
+    // ReSharper disable once CppDFAConstantConditions
     if (filename == nullptr) {
         return nullptr;
     }
@@ -210,6 +211,7 @@ auto fileDescriptorsFirstNullCell() -> std::vector<std::unique_ptr<filedesc>>::i
     while (file->block_count < needed_blocks) {
         // ReSharper disable once CppDFAConstantConditions
         if (!appendBlock(file)) {
+            // ReSharper disable once CppDFAUnreachableCode
             return false;
         }
     }
@@ -305,7 +307,7 @@ ssize_t ufs_write(const int file_descriptor, const char *buffer, const std::size
         return failure;
     }
     if (size == 0) {
-        return static_cast<ssize_t>(success);
+        return success;
     }
 
     if (size > MAX_FILE_SIZE - descriptor_pointer->cursor_position) {
@@ -366,13 +368,13 @@ ssize_t ufs_read(const int file_descriptor, char *buffer, const std::size_t size
         return failure;
     }
     if (size == 0) {
-        return static_cast<ssize_t>(success);
+        return success;
     }
     const auto file = descriptor_pointer->at_file;
     assert(file != nullptr);
 
     if (descriptor_pointer->cursor_position >= file->size) {
-        return static_cast<ssize_t>(success);
+        return success;
     }
 
     const auto remaining_bytes = file->size - descriptor_pointer->cursor_position;
@@ -402,7 +404,7 @@ ssize_t ufs_read(const int file_descriptor, char *buffer, const std::size_t size
         }
     }
 
-    return bytes_read_total;
+    return static_cast<ssize_t>(bytes_read_total);
 }
 
 int ufs_close(const int file_descriptor) {
@@ -471,9 +473,9 @@ int ufs_resize(const int file_descriptor, const std::size_t new_size) {
     }
     const auto current_file = descriptor_pointer->at_file;
     assert(current_file != nullptr);
-    std::size_t old_size = current_file->size;
+    const std::size_t old_size = current_file->size;
     if (new_size == old_size) {
-        return static_cast<ssize_t>(success);
+        return success;
     }
 
     // shrink:
@@ -537,7 +539,7 @@ int ufs_resize(const int file_descriptor, const std::size_t new_size) {
         current_file->size = new_size;
     }
 
-    return static_cast<ssize_t>(success);
+    return success;
 }
 
 #endif
@@ -552,12 +554,27 @@ void ufs_destroy() {
      * The recommended way of freeing the memory is to swap()
      * the vector with a temporary empty vector.
      */
-
-    /*
-    while (!rlist_empty(&file_list)) {
-
+    for (auto &descriptor : file_descriptors_table) {
+        if (descriptor == nullptr) {
+            continue;
+        }
+        file *current_file = descriptor->at_file;
+        assert(current_file != nullptr);
+        descriptor.reset(nullptr);
+        --current_file->references;
+        if (current_file->references == 0 && current_file->is_this_deleted) {
+            freeAllBlocks(current_file);
+            delete current_file;
+        }
     }
-    */
 
-    set_ufs_errno(UFS_ERR_NOT_IMPLEMENTED);
+    while (!rlist_empty(&file_list)) {
+        const auto current_file = rlist_first_entry(&file_list, file, in_file_list);
+        rlist_del(&current_file->in_file_list);
+        freeAllBlocks(current_file);
+        delete current_file;
+    }
+    // swap because of the capacity
+    std::vector<std::unique_ptr<filedesc>>().swap(file_descriptors_table);
+    set_ufs_errno(UFS_ERR_NO_ERR);
 }
