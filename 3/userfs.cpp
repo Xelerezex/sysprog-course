@@ -359,12 +359,50 @@ ssize_t ufs_read(const int file_descriptor, char *buffer, const std::size_t size
         set_ufs_errno(UFS_ERR_NO_FILE);
         return -1;
     }
+    const auto descriptor_index = file_descriptor - 1;
+    const auto &descriptor_pointer = file_descriptors_table[descriptor_index];
+    if (!descriptor_pointer->readable) {
+        set_ufs_errno(UFS_ERR_NO_PERMISSION);
+        return failure;
+    }
+    if (size == 0) {
+        return static_cast<ssize_t>(success);
+    }
+    const auto file = descriptor_pointer->at_file;
+    assert(file != nullptr);
 
-    (void)buffer;
-    (void)size;
+    if (descriptor_pointer->cursor_position >= file->size) {
+        return static_cast<ssize_t>(success);
+    }
 
-    set_ufs_errno(UFS_ERR_NOT_IMPLEMENTED);
-    return -1;
+    const auto remaining_bytes = file->size - descriptor_pointer->cursor_position;
+    const auto bytes_to_read = std::min(size, remaining_bytes);
+    if (descriptor_pointer->current_block == nullptr && bytes_to_read > 0) {
+        setCursor(descriptor_pointer, descriptor_pointer->cursor_position);
+    }
+
+    std::size_t bytes_read_total = 0;
+    while (bytes_read_total < bytes_to_read) {
+        const auto available_bytes = BLOCK_SIZE - descriptor_pointer->current_offset;
+        const std::size_t chunk = std::min(available_bytes, bytes_to_read - bytes_read_total);
+        std::memcpy(buffer + bytes_read_total,
+                    descriptor_pointer->current_block->memory + descriptor_pointer->current_offset,
+                    chunk);
+        bytes_read_total += chunk;
+        descriptor_pointer->cursor_position += chunk;
+        descriptor_pointer->current_offset += chunk;
+        if (descriptor_pointer->current_offset == BLOCK_SIZE) {
+            descriptor_pointer->current_block =
+                    nextBlock(descriptor_pointer->at_file, descriptor_pointer->current_block);
+            descriptor_pointer->current_offset = 0;
+            // cursor to next block
+            if (descriptor_pointer->current_block == nullptr) {
+                setCursor(descriptor_pointer, descriptor_pointer->cursor_position);
+            }
+        }
+    }
+
+    return bytes_read_total;
 }
 
 int ufs_close(const int file_descriptor) {
