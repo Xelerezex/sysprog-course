@@ -1,8 +1,10 @@
 #include "userfs.h"
 
+#include <algorithm>
 #include <cassert>
 #include <cstddef>
 #include <cstring>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -11,6 +13,9 @@
 namespace {
 
 /* ------------------------------------------- Types ------------------------------------------- */
+constexpr int success = 0;
+constexpr int failure = -1;
+
 enum {
     BLOCK_SIZE = 512,
     MAX_FILE_SIZE = 1024 * 1024 * 100,
@@ -69,7 +74,7 @@ rlist file_list = RLIST_HEAD_INITIALIZER(file_list);
  * closed, its place in this array is set to NULL and can be
  * taken by next ufs_open() call.
  */
-std::vector<filedesc *> file_descriptors_table;
+std::vector<std::unique_ptr<filedesc>> file_descriptors_table;
 
 // Global error code. Set from any function on any error.
 ufs_error_code ufs_last_error_code = UFS_ERR_NO_ERR;
@@ -101,7 +106,7 @@ auto firstBlock(const file *current_file) -> block * {
     return rlist_first_entry(&current_file->blocks, block, in_block_list);
 }
 
-[[maybe_unused]] auto nextBlock(const file *current_file, block *current_block) -> block * {
+auto nextBlock(const file *current_file, block *current_block) -> block * {
     if (current_file == nullptr || current_block == nullptr) {
         return nullptr;
     }
@@ -138,7 +143,7 @@ auto firstBlock(const file *current_file) -> block * {
     return true;
 }
 
-[[maybe_unused]] bool isValidFileDescriptor(const int file_descriptor) {
+bool isValidFileDescriptor(const int file_descriptor) {
     if (file_descriptor <= 0) {
         return false;
     }
@@ -153,7 +158,7 @@ auto firstBlock(const file *current_file) -> block * {
     return true;
 }
 
-[[maybe_unused]] bool setCursor(filedesc *current_file_descriptor, const std::size_t new_cursor_position) {
+bool setCursor(const std::unique_ptr<filedesc> &current_file_descriptor, const std::size_t new_cursor_position) {
     if (current_file_descriptor == nullptr) {
         return false;
     }
@@ -187,6 +192,13 @@ auto firstBlock(const file *current_file) -> block * {
     return true;
 }
 
+auto fileDescriptorsFirstNullCell() -> std::vector<std::unique_ptr<filedesc>>::iterator {
+    return std::find_if(
+            std::begin(file_descriptors_table),
+            std::end(file_descriptors_table),
+            [](const std::unique_ptr<filedesc> &descriptor_pointer) -> bool { return descriptor_pointer == nullptr; });
+}
+
 /* -------------------------------------------- *** -------------------------------------------- */
 }    // namespace
 
@@ -198,29 +210,61 @@ int ufs_open(const char *filename, const int flags) {
     set_ufs_errno(UFS_ERR_NO_ERR);
     if (filename == nullptr) {
         set_ufs_errno(UFS_ERR_NO_FILE);
-        return -1;
+        return failure;
     }
-    /*
-    rlist_create(&file_list);
 
-    auto *a = new file;
-    a->name = "A";
-    rlist_create(&a->in_file_list);
+    // Create new file descriptor:
+    auto new_file_descriptor = std::make_unique<filedesc>();
+    // Find file or create
+    if (const auto found_file = findFile(filename); found_file == nullptr) {
+        if ((flags & UFS_CREATE) == 0) {
+            set_ufs_errno(UFS_ERR_NO_FILE);
+            return failure;
+        }
 
-    auto *b = new file;
-    b->name = "B";
-    rlist_create(&b->in_file_list);
+        // Create new file:
+        const auto new_file = new file();
+        new_file->name = filename;
+        new_file->references = 0;
+        new_file->size = 0;
+        new_file->block_count = 0;
+        new_file->is_this_deleted = false;
+        rlist_add_tail_entry(&file_list, new_file, in_file_list);
 
-    rlist_add_tail_entry(&file_list, a, in_file_list);
-    rlist_add_tail_entry(&file_list, b, in_file_list);
+        // Add file to descriptor
+        new_file_descriptor->at_file = new_file;
+    } else {
+        new_file_descriptor->at_file = found_file;
+    }
+    assert(new_file_descriptor->at_file != nullptr);
+    ++new_file_descriptor->at_file->references;
 
-    [[maybe_unused]] file *f = findFile("B");
-    */
+    // Setup descriptor
+    setCursor(new_file_descriptor, 0);
+    constexpr int read_write_mask = UFS_READ_ONLY | UFS_WRITE_ONLY;
+    if (const int read_write = flags & read_write_mask; read_write == 0 || read_write == read_write_mask) {
+        // default OR explicit read/write
+        new_file_descriptor->readable = true;
+        new_file_descriptor->writable = true;
+    } else if (read_write == UFS_READ_ONLY) {
+        new_file_descriptor->readable = true;
+        new_file_descriptor->writable = false;
+    } else {    // rw == UFS_WRITE_ONLY
+        new_file_descriptor->readable = false;
+        new_file_descriptor->writable = true;
+    }
 
-    (void)flags;
+    // Calculate descriptor
+    int descriptor;
+    if (const auto find_iter = fileDescriptorsFirstNullCell(); find_iter == std::end(file_descriptors_table)) {
+        file_descriptors_table.push_back(std::move(new_file_descriptor));
+        descriptor = static_cast<int>(file_descriptors_table.size());
+    } else {
+        *find_iter = std::move(new_file_descriptor);
+        descriptor = static_cast<int>(std::distance(std::begin(file_descriptors_table), find_iter)) + 1;
+    }
 
-    set_ufs_errno(UFS_ERR_NOT_IMPLEMENTED);
-    return -1;
+    return descriptor;
 }
 
 ssize_t ufs_write(const int file_descriptor, const char *buffer, const std::size_t size) {
@@ -292,7 +336,6 @@ int ufs_resize(const int file_descriptor, const std::size_t new_size) {
 #endif
 
 void ufs_destroy() {
-    set_ufs_errno(UFS_ERR_NO_ERR);
     /*
      * The file_descriptors array is likely to leak even if
      * you resize it to zero or call clear(). This is because
@@ -302,5 +345,12 @@ void ufs_destroy() {
      * The recommended way of freeing the memory is to swap()
      * the vector with a temporary empty vector.
      */
+
+    /*
+    while (!rlist_empty(&file_list)) {
+
+    }
+    */
+
     set_ufs_errno(UFS_ERR_NOT_IMPLEMENTED);
 }
