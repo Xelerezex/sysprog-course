@@ -1,5 +1,6 @@
 #include "userfs.h"
 
+#include <cassert>
 #include <cstddef>
 #include <cstring>
 #include <string>
@@ -43,7 +44,7 @@ struct filedesc {
     // Descriptor of this file
     file *at_file = nullptr;
     // Current cursor position
-    std::size_t position = 0;
+    std::size_t cursor_position = 0;
     // Current block
     block *current_block = nullptr;
     // Current offset
@@ -137,6 +138,55 @@ auto firstBlock(const file *current_file) -> block * {
     return true;
 }
 
+[[maybe_unused]] bool isValidFileDescriptor(const int file_descriptor) {
+    if (file_descriptor <= 0) {
+        return false;
+    }
+    const auto table_index = file_descriptor - 1;
+    if (static_cast<std::size_t>(table_index) >= file_descriptors_table.size()) {
+        return false;
+    }
+    if (file_descriptors_table[table_index] == nullptr) {
+        return false;
+    }
+
+    return true;
+}
+
+[[maybe_unused]] bool setCursor(filedesc *current_file_descriptor, const std::size_t new_cursor_position) {
+    if (current_file_descriptor == nullptr) {
+        return false;
+    }
+    const auto current_file = current_file_descriptor->at_file;
+    if (current_file == nullptr) {
+        return false;
+    }
+
+    // set new value
+    current_file_descriptor->cursor_position = new_cursor_position;
+    // rebuild cached values
+    current_file_descriptor->current_block = nullptr;
+    current_file_descriptor->current_offset = 0;
+
+    const std::size_t target_block_index = new_cursor_position / BLOCK_SIZE;
+    const std::size_t target_block_offset = new_cursor_position % BLOCK_SIZE;
+
+    if (target_block_index < current_file->block_count) {
+        // walk until needed block:
+        auto block = firstBlock(current_file);
+        if (block == nullptr) {
+            return false;
+        }
+        for (std::size_t index = 0; index < target_block_index; ++index) {
+            block = nextBlock(current_file, block);
+            assert(block != nullptr);
+        }
+        current_file_descriptor->current_block = block;
+        current_file_descriptor->current_offset = target_block_offset;
+    }
+    return true;
+}
+
 /* -------------------------------------------- *** -------------------------------------------- */
 }    // namespace
 
@@ -145,7 +195,11 @@ ufs_error_code ufs_errno() {
 }
 
 int ufs_open(const char *filename, const int flags) {
-    /* IMPLEMENT THIS FUNCTION */
+    set_ufs_errno(UFS_ERR_NO_ERR);
+    if (filename == nullptr) {
+        set_ufs_errno(UFS_ERR_NO_FILE);
+        return -1;
+    }
     /*
     rlist_create(&file_list);
 
@@ -163,17 +217,19 @@ int ufs_open(const char *filename, const int flags) {
     [[maybe_unused]] file *f = findFile("B");
     */
 
-    (void)filename;
     (void)flags;
-    (void)file_list;
-    (void)file_descriptors_table;
+
     set_ufs_errno(UFS_ERR_NOT_IMPLEMENTED);
     return -1;
 }
 
 ssize_t ufs_write(const int file_descriptor, const char *buffer, const std::size_t size) {
-    /* IMPLEMENT THIS FUNCTION */
-    (void)file_descriptor;
+    set_ufs_errno(UFS_ERR_NO_ERR);
+    if (!isValidFileDescriptor(file_descriptor)) {
+        set_ufs_errno(UFS_ERR_NO_FILE);
+        return -1;
+    }
+
     (void)buffer;
     (void)size;
     set_ufs_errno(UFS_ERR_NOT_IMPLEMENTED);
@@ -181,24 +237,37 @@ ssize_t ufs_write(const int file_descriptor, const char *buffer, const std::size
 }
 
 ssize_t ufs_read(const int file_descriptor, char *buffer, const std::size_t size) {
-    /* IMPLEMENT THIS FUNCTION */
-    (void)file_descriptor;
+    set_ufs_errno(UFS_ERR_NO_ERR);
+    if (!isValidFileDescriptor(file_descriptor)) {
+        set_ufs_errno(UFS_ERR_NO_FILE);
+        return -1;
+    }
+
     (void)buffer;
     (void)size;
+
     set_ufs_errno(UFS_ERR_NOT_IMPLEMENTED);
     return -1;
 }
 
 int ufs_close(const int file_descriptor) {
-    /* IMPLEMENT THIS FUNCTION */
-    (void)file_descriptor;
+    set_ufs_errno(UFS_ERR_NO_ERR);
+    if (!isValidFileDescriptor(file_descriptor)) {
+        set_ufs_errno(UFS_ERR_NO_FILE);
+        return -1;
+    }
+
     set_ufs_errno(UFS_ERR_NOT_IMPLEMENTED);
     return -1;
 }
 
 int ufs_delete(const char *filename) {
-    /* IMPLEMENT THIS FUNCTION */
-    (void)filename;
+    set_ufs_errno(UFS_ERR_NO_ERR);
+    if (filename == nullptr) {
+        set_ufs_errno(UFS_ERR_NO_FILE);
+        return -1;
+    }
+
     set_ufs_errno(UFS_ERR_NOT_IMPLEMENTED);
     return -1;
 }
@@ -206,9 +275,16 @@ int ufs_delete(const char *filename) {
 #if NEED_RESIZE
 
 int ufs_resize(const int file_descriptor, const std::size_t new_size) {
-    /* IMPLEMENT THIS FUNCTION */
-    (void)file_descriptor;
-    (void)new_size;
+    set_ufs_errno(UFS_ERR_NO_ERR);
+    if (!isValidFileDescriptor(file_descriptor)) {
+        set_ufs_errno(UFS_ERR_NO_FILE);
+        return -1;
+    }
+    if (new_size > MAX_FILE_SIZE) {
+        set_ufs_errno(UFS_ERR_NO_MEM);
+        return -1;
+    }
+
     set_ufs_errno(UFS_ERR_NOT_IMPLEMENTED);
     return -1;
 }
@@ -216,6 +292,7 @@ int ufs_resize(const int file_descriptor, const std::size_t new_size) {
 #endif
 
 void ufs_destroy() {
+    set_ufs_errno(UFS_ERR_NO_ERR);
     /*
      * The file_descriptors array is likely to leak even if
      * you resize it to zero or call clear(). This is because
