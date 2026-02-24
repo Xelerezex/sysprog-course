@@ -85,7 +85,7 @@ void set_ufs_errno(const ufs_error_code new_errno) {
     ufs_last_error_code = new_errno;
 }
 
-[[maybe_unused]] auto findFile(const char *filename) -> file * {
+auto findFile(const char *filename) -> file * {
     if (filename == nullptr) {
         return nullptr;
     }
@@ -117,7 +117,7 @@ auto nextBlock(const file *current_file, block *current_block) -> block * {
     return rlist_next_entry(current_block, in_block_list);
 }
 
-[[maybe_unused]] bool appendBlock(file *current_file) {
+bool appendBlock(file *current_file) {
     if (current_file == nullptr) {
         return false;
     }
@@ -199,6 +199,31 @@ auto fileDescriptorsFirstNullCell() -> std::vector<std::unique_ptr<filedesc>>::i
             [](const std::unique_ptr<filedesc> &descriptor_pointer) -> bool { return descriptor_pointer == nullptr; });
 }
 
+[[maybe_unused]] bool ensureEnoughCapacity(file *file, const std::size_t end_pos) {
+    if (file == nullptr) {
+        return false;
+    }
+    if (end_pos == 0) {
+        return true;
+    }
+    const std::size_t needed_blocks = (end_pos + BLOCK_SIZE - 1) / BLOCK_SIZE;
+    while (file->block_count < needed_blocks) {
+        // ReSharper disable once CppDFAConstantConditions
+        if (!appendBlock(file)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+[[maybe_unused]] bool checkMaxFileSize(const std::size_t end_pos) {
+    if (end_pos > MAX_FILE_SIZE) {
+        set_ufs_errno(UFS_ERR_NO_MEM);
+        return false;
+    }
+    return true;
+}
+
 /* -------------------------------------------- *** -------------------------------------------- */
 }    // namespace
 
@@ -271,13 +296,61 @@ ssize_t ufs_write(const int file_descriptor, const char *buffer, const std::size
     set_ufs_errno(UFS_ERR_NO_ERR);
     if (!isValidFileDescriptor(file_descriptor)) {
         set_ufs_errno(UFS_ERR_NO_FILE);
-        return -1;
+        return failure;
+    }
+    const auto descriptor_index = file_descriptor - 1;
+    const auto &descriptor_pointer = file_descriptors_table[descriptor_index];
+    if (!descriptor_pointer->writable) {
+        set_ufs_errno(UFS_ERR_NO_PERMISSION);
+        return failure;
+    }
+    if (size == 0) {
+        return static_cast<ssize_t>(success);
     }
 
-    (void)buffer;
-    (void)size;
-    set_ufs_errno(UFS_ERR_NOT_IMPLEMENTED);
-    return -1;
+    if (size > MAX_FILE_SIZE - descriptor_pointer->cursor_position) {
+        set_ufs_errno(UFS_ERR_NO_MEM);
+        return failure;
+    }
+
+    const auto end_position = descriptor_pointer->cursor_position + size;
+    if (end_position > MAX_FILE_SIZE) {
+        set_ufs_errno(UFS_ERR_NO_MEM);
+        return failure;
+    }
+
+    assert(descriptor_pointer->at_file != nullptr);
+    if (!ensureEnoughCapacity(descriptor_pointer->at_file, end_position)) {
+        set_ufs_errno(UFS_ERR_NO_MEM);
+        return failure;
+    }
+    if (descriptor_pointer->current_block == nullptr) {
+        setCursor(descriptor_pointer, descriptor_pointer->cursor_position);
+    }
+
+    std::size_t bytes_written = 0;
+    while (bytes_written < size) {
+        const std::size_t available = BLOCK_SIZE - descriptor_pointer->current_offset;
+        const std::size_t chunk = std::min(available, size - bytes_written);
+        std::memcpy(descriptor_pointer->current_block->memory + descriptor_pointer->current_offset,
+                    buffer + bytes_written,
+                    chunk);
+        bytes_written += chunk;
+        descriptor_pointer->cursor_position += chunk;
+        descriptor_pointer->current_offset += chunk;
+        if (descriptor_pointer->current_offset == BLOCK_SIZE) {
+            descriptor_pointer->current_block =
+                    nextBlock(descriptor_pointer->at_file, descriptor_pointer->current_block);
+            descriptor_pointer->current_offset = 0;
+            // cursor to next block
+            if (descriptor_pointer->current_block == nullptr) {
+                setCursor(descriptor_pointer, descriptor_pointer->cursor_position);
+            }
+        }
+    }
+    descriptor_pointer->at_file->size = std::max(descriptor_pointer->at_file->size, end_position);
+
+    return static_cast<ssize_t>(bytes_written);
 }
 
 ssize_t ufs_read(const int file_descriptor, char *buffer, const std::size_t size) {
