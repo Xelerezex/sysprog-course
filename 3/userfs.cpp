@@ -431,11 +431,23 @@ int ufs_delete(const char *filename) {
     set_ufs_errno(UFS_ERR_NO_ERR);
     if (filename == nullptr) {
         set_ufs_errno(UFS_ERR_NO_FILE);
-        return -1;
+        return failure;
+    }
+    const auto file_to_delete = findFile(filename);
+    if (file_to_delete == nullptr) {
+        set_ufs_errno(UFS_ERR_NO_FILE);
+        return failure;
     }
 
-    set_ufs_errno(UFS_ERR_NOT_IMPLEMENTED);
-    return -1;
+    // Make ghost file
+    rlist_del(&file_to_delete->in_file_list);
+    file_to_delete->is_this_deleted = true;
+    if (file_to_delete->references == 0) {
+        freeAllBlocks(file_to_delete);
+        delete file_to_delete;
+    }
+
+    return success;
 }
 
 #if NEED_RESIZE
