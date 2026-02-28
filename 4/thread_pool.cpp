@@ -17,30 +17,6 @@ constexpr int success = 0;
 }    // namespace
 /* -------------------------------------------- *** -------------------------------------------- */
 
-/* ------------------------------------------ Helpers ------------------------------------------ */
-namespace {
-
-void initializeConditionVariable(pthread_cond_t *condition) {
-    pthread_condattr_t attributes {};
-    if (success != pthread_condattr_init(&attributes)) {
-        pthread_cond_init(condition, nullptr);
-        return;
-    }
-    if (success != pthread_condattr_setclock(&attributes, CLOCK_MONOTONIC)) {
-        pthread_condattr_destroy(&attributes);
-        pthread_cond_init(condition, nullptr);
-        return;
-    }
-    if (success != pthread_cond_init(condition, &attributes)) {
-        pthread_condattr_destroy(&attributes);
-        pthread_cond_init(condition, nullptr);
-        return;
-    }
-    pthread_condattr_destroy(&attributes);
-}
-}    // namespace
-/* -------------------------------------------- *** -------------------------------------------- */
-
 /* ------------------------------------------- Types ------------------------------------------- */
 namespace {
 enum class State : std::int32_t {
@@ -49,6 +25,9 @@ enum class State : std::int32_t {
     Running,
     Finished,
 };
+
+void initializeConditionVariable(pthread_cond_t *condition);
+
 }    // namespace
 
 struct thread_pool {
@@ -94,6 +73,99 @@ struct thread_task {
     bool is_joined = false;
     bool is_detached = false;
 };
+/* -------------------------------------------- *** -------------------------------------------- */
+
+/* ------------------------------------------ Helpers ------------------------------------------ */
+namespace {
+
+void initializeConditionVariable(pthread_cond_t *condition) {
+    pthread_condattr_t attributes {};
+    if (success != pthread_condattr_init(&attributes)) {
+        pthread_cond_init(condition, nullptr);
+        return;
+    }
+    if (success != pthread_condattr_setclock(&attributes, CLOCK_MONOTONIC)) {
+        pthread_condattr_destroy(&attributes);
+        pthread_cond_init(condition, nullptr);
+        return;
+    }
+    if (success != pthread_cond_init(condition, &attributes)) {
+        pthread_condattr_destroy(&attributes);
+        pthread_cond_init(condition, nullptr);
+        return;
+    }
+    pthread_condattr_destroy(&attributes);
+}
+
+void run(thread_task *task) {
+    // Running
+    pthread_mutex_lock(&task->mutex);
+    task->task_state = State::Running;
+    pthread_mutex_unlock(&task->mutex);
+
+    // Execution
+    try {
+        task->function();
+    } catch (...) {
+        // do nothing
+    }
+
+    thread_pool *current_pool = nullptr;
+
+    // Finished
+    pthread_mutex_lock(&task->mutex);
+    task->task_state = State::Finished;
+    const bool do_detach = task->is_detached;
+    if (do_detach) {
+        task->is_joined = true;
+        current_pool = task->parent_pool;    // capture before clearing
+        task->parent_pool = nullptr;         // disassociate
+    }
+    pthread_cond_broadcast(&task->finished_cv);
+    pthread_mutex_unlock(&task->mutex);
+
+    if (do_detach) {
+        // Remove from pool ownership and delete.
+        if (current_pool != nullptr) {
+            pthread_mutex_lock(&current_pool->mutex);
+            current_pool->tasks_in_pool.erase(task);
+            pthread_mutex_unlock(&current_pool->mutex);
+        }
+        delete task;
+    }
+}
+
+[[maybe_unused]] void *worker(void *arg) {
+    auto *pool = static_cast<thread_pool *>(arg);
+    if (pool == nullptr) {
+        return nullptr;
+    }
+
+    // Wait loop:
+    while (true) {
+        pthread_mutex_lock(&pool->mutex);
+
+        // wait for task
+        while (!pool->stop && pool->tasks_queue.empty()) {
+            ++pool->idle_workers;
+            pthread_cond_wait(&pool->has_task_cv, &pool->mutex);
+            --pool->idle_workers;
+        }
+        // exit wait loop
+        if (pool->stop && pool->tasks_queue.empty()) {
+            pthread_mutex_unlock(&pool->mutex);
+            break;
+        }
+
+        const auto task = pool->tasks_queue.front();
+        pool->tasks_queue.pop_front();
+        pthread_mutex_unlock(&pool->mutex);
+        run(task);
+    }
+    return nullptr;
+}
+
+}    // namespace
 /* -------------------------------------------- *** -------------------------------------------- */
 
 int thread_pool_new(const int thread_count, thread_pool **pool) {
