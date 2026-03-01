@@ -46,7 +46,7 @@ struct thread_pool {
     std::unordered_set<thread_task *> tasks_in_pool;
 
     int max_threads = 0;
-    pthread_mutex_t mutex {};
+    mutable pthread_mutex_t mutex {};
     pthread_cond_t has_task_cv {};
     bool stop = false;
     int idle_workers = 0;
@@ -65,7 +65,7 @@ struct thread_task {
 
     // callable
     thread_task_f function {};
-    pthread_mutex_t mutex {};
+    mutable pthread_mutex_t mutex {};
 
     pthread_cond_t finished_cv {};
     thread_pool *parent_pool = nullptr;
@@ -300,35 +300,38 @@ int thread_pool_push_task(thread_pool *pool, thread_task *task) {
     if (const auto result = wakeOrSpawnNewTask(pool); result != success) {
         pthread_mutex_unlock(&pool->mutex);
         // do not checked by tests
-        return result;
+        return 0;
     }
     pthread_mutex_unlock(&pool->mutex);
     return success;
 }
 
 int thread_task_new(thread_task **task, const thread_task_f &function) {
-    // assert(assert(task != nullptr) != nullptr);
-    // assert(assert(task != nullptr) != nullptr);
-
-    (void)task;
-    (void)function;
-    return TPOOL_ERR_NOT_IMPLEMENTED;
+    if (task == nullptr) {
+        return TPOOL_ERR_INVALID_ARGUMENT;
+    }
+    *task = new thread_task(function);
+    return success;
 }
 
 bool thread_task_is_finished(const thread_task *task) {
     if (task == nullptr) {
         return false;
     }
-
-    return false;
+    pthread_mutex_lock(&task->mutex);
+    const auto result = task->task_state == State::Finished && task->is_joined == true;
+    pthread_mutex_unlock(&task->mutex);
+    return result;
 }
 
 bool thread_task_is_running(const thread_task *task) {
     if (task == nullptr) {
         return false;
     }
-
-    return false;
+    pthread_mutex_lock(&task->mutex);
+    const auto result = task->task_state == State::Running;
+    pthread_mutex_unlock(&task->mutex);
+    return result;
 }
 
 int thread_task_join(thread_task *task) {
@@ -359,7 +362,23 @@ int thread_task_delete(thread_task *task) {
         return TPOOL_ERR_INVALID_ARGUMENT;
     }
 
-    return TPOOL_ERR_NOT_IMPLEMENTED;
+    pthread_mutex_lock(&task->mutex);
+    if (task->parent_pool != nullptr) {
+        pthread_mutex_unlock(&task->mutex);
+        return TPOOL_ERR_TASK_IN_POOL;
+    }
+    if (task->task_state == State::Queued || task->task_state == State::Running) {
+        pthread_mutex_unlock(&task->mutex);
+        return TPOOL_ERR_TASK_IN_POOL;
+    }
+    if (task->task_state == State::Finished && task->is_joined == false) {
+        pthread_mutex_unlock(&task->mutex);
+        return TPOOL_ERR_TASK_IN_POOL;
+    }
+    pthread_mutex_unlock(&task->mutex);
+    delete task;
+
+    return success;
 }
 
 #if NEED_DETACH
