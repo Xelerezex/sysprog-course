@@ -78,6 +78,13 @@ struct thread_task {
 /* ------------------------------------------ Helpers ------------------------------------------ */
 namespace {
 
+/*
+ * pthread_cond_t           -> std::condition_variable
+ * pthread_cond_signal()    -> .notify_one()
+ * pthread_cond_broadcast() -> .notify_all()
+ * pthread_cond_wait()      -> .wait()
+ */
+
 void initializeConditionVariable(pthread_cond_t *condition) {
     pthread_condattr_t attributes {};
     if (success != pthread_condattr_init(&attributes)) {
@@ -135,7 +142,8 @@ void run(thread_task *task) {
     }
 }
 
-[[maybe_unused]] void *worker(void *arg) {
+// ReSharper disable once CppDFAConstantFunctionResult
+void *worker(void *arg) {
     auto *pool = static_cast<thread_pool *>(arg);
     if (pool == nullptr) {
         return nullptr;
@@ -165,19 +173,65 @@ void run(thread_task *task) {
     return nullptr;
 }
 
+/*
+* this is dangerous:
+bool isLockHeld(pthread_mutex_t *mutex) {
+    // we should hold it
+    if (const auto result = pthread_mutex_trylock(mutex); result == success) {
+        pthread_mutex_unlock(mutex);
+        return false;
+    }
+    return true;
+}
+*/
+
+[[maybe_unused]] int spawnLockedWorker(thread_pool *pool) {
+    // mutex should be locked
+    if (pool->stop) {
+        return failure;
+    }
+    if (pool->threads.size() >= static_cast<std::size_t>(pool->max_threads)) {
+        return failure;
+    }
+
+    pthread_t new_thread;
+    if (const int result = pthread_create(&new_thread, nullptr, worker, pool); result != success) {
+        return result;
+    }
+    pool->threads.push_back(new_thread);
+    return success;
+}
+
+[[maybe_unused]] int wakeOrSpawnNewTask(thread_pool *pool) {
+    // mutex should be locked
+    if (pool->idle_workers > 0) {
+        pthread_cond_signal(&pool->has_task_cv);
+    } else if (pool->threads.size() < static_cast<std::size_t>(pool->max_threads)) {
+        if (const auto spawn_result = spawnLockedWorker(pool); spawn_result != success) {
+            return spawn_result;
+        }
+        pthread_cond_signal(&pool->has_task_cv);
+    } else {
+        pthread_cond_signal(&pool->has_task_cv);
+    }
+
+    return success;
+}
+
 }    // namespace
 /* -------------------------------------------- *** -------------------------------------------- */
 
 int thread_pool_new(const int thread_count, thread_pool **pool) {
-    if (thread_count <= 0 || thread_count > TPOOL_MAX_THREADS) {
-        return TPOOL_ERR_INVALID_ARGUMENT;
-    }
     if (pool == nullptr) {
         return TPOOL_ERR_INVALID_ARGUMENT;
     }
+    if (thread_count <= 0 || thread_count > TPOOL_MAX_THREADS) {
+        *pool = nullptr;
+        return TPOOL_ERR_INVALID_ARGUMENT;
+    }
     /* must NOT start all threads immediately */
-
-    return TPOOL_ERR_NOT_IMPLEMENTED;
+    *pool = new thread_pool(thread_count);
+    return success;
 }
 
 int thread_pool_delete(thread_pool *pool) {
