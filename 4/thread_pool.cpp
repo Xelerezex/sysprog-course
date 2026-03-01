@@ -238,8 +238,21 @@ int thread_pool_delete(thread_pool *pool) {
     if (pool == nullptr) {
         return TPOOL_ERR_INVALID_ARGUMENT;
     }
+    pthread_mutex_lock(&pool->mutex);
+    if (!pool->tasks_in_pool.empty()) {
+        pthread_mutex_unlock(&pool->mutex);
+        return TPOOL_ERR_HAS_TASKS;
+    }
 
-    return TPOOL_ERR_NOT_IMPLEMENTED;
+    pool->stop = true;
+    pthread_cond_broadcast(&pool->has_task_cv);
+    pthread_mutex_unlock(&pool->mutex);
+
+    for (const auto &thread : pool->threads) {
+        pthread_join(thread, nullptr);
+    }
+    delete pool;
+    return success;
 }
 
 int thread_pool_push_task(thread_pool *pool, thread_task *task) {
