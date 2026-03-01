@@ -338,8 +338,33 @@ int thread_task_join(thread_task *task) {
     if (task == nullptr) {
         return TPOOL_ERR_INVALID_ARGUMENT;
     }
+    pthread_mutex_lock(&task->mutex);
+    if (task->parent_pool == nullptr && task->task_state == State::New) {
+        pthread_mutex_unlock(&task->mutex);
+        return TPOOL_ERR_TASK_NOT_PUSHED;
+    }
+    // already joined
+    if (task->task_state == State::Finished && task->is_joined == true && task->parent_pool == nullptr) {
+        pthread_mutex_unlock(&task->mutex);
+        return success;
+    }
 
-    return TPOOL_ERR_NOT_IMPLEMENTED;
+    // wait till finished
+    while (task->task_state != State::Finished) {
+        pthread_cond_wait(&task->finished_cv, &task->mutex);
+    }
+
+    task->is_joined = true;
+    thread_pool *current_pool = task->parent_pool;
+    task->parent_pool = nullptr;
+    pthread_mutex_unlock(&task->mutex);
+    if (current_pool != nullptr) {
+        pthread_mutex_lock(&current_pool->mutex);
+        current_pool->tasks_in_pool.erase(task);
+        pthread_mutex_unlock(&current_pool->mutex);
+    }
+
+    return success;
 }
 
 #if NEED_TIMED_JOIN
@@ -348,7 +373,7 @@ int thread_task_timed_join(thread_task *task, const double timeout) {
     if (task == nullptr) {
         return TPOOL_ERR_INVALID_ARGUMENT;
     }
-    if (timeout < 0) {
+    if (timeout <= 0.1) {
         return TPOOL_ERR_TIMEOUT;
     }
 
