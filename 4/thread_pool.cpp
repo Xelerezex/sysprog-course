@@ -3,9 +3,12 @@
 #include <pthread.h>
 
 #include <cassert>
+#include <cerrno>
+#include <cmath>
 #include <cstdint>
 #include <ctime>
 #include <deque>
+#include <limits>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -13,7 +16,8 @@
 /* ----------------------------------------- Variables ----------------------------------------- */
 namespace {
 constexpr int success = 0;
-[[maybe_unused]] constexpr int failure = -1;
+constexpr int failure = -1;
+constexpr auto nsec_per_sec = 1'000'000'000L;
 }    // namespace
 /* -------------------------------------------- *** -------------------------------------------- */
 
@@ -218,6 +222,46 @@ bool isLockHeld(pthread_mutex_t *mutex) {
     return success;
 }
 
+void initializeDeadline(timespec *deadline, const double delay_seconds) {
+    if (deadline == nullptr) {
+        return;
+    }
+
+    timespec now {};
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    if (delay_seconds <= 0.0) {
+        *deadline = now;
+        return;
+    }
+
+    long double delay_per_second = static_cast<long double>(delay_seconds) * static_cast<long double>(nsec_per_sec);
+    constexpr auto max_int64_value = static_cast<long double>(std::numeric_limits<int64_t>::max());
+    if (delay_per_second < 0.0L) {    // NaN -> treat as 0
+        delay_per_second = 0.0L;
+    } else if (delay_per_second > max_int64_value) {
+        delay_per_second = max_int64_value;
+    }
+
+    const auto add_nano_seconds = static_cast<int64_t>(std::ceil(delay_per_second));
+
+    int64_t now_seconds_in_nano_seconds = 0;
+    if (now.tv_sec > std::numeric_limits<int64_t>::max() / nsec_per_sec) {
+        now_seconds_in_nano_seconds = std::numeric_limits<int64_t>::max();
+    } else {
+        now_seconds_in_nano_seconds = now.tv_sec * nsec_per_sec;
+    }
+
+    const int64_t now_nano_seconds = (now_seconds_in_nano_seconds == max_int64_value)
+                                             ? max_int64_value
+                                             : (now_seconds_in_nano_seconds + now.tv_nsec);
+    const int64_t deadline_ns = (now_nano_seconds > max_int64_value - add_nano_seconds)
+                                        ? max_int64_value
+                                        : (now_nano_seconds + add_nano_seconds);
+
+    deadline->tv_sec = deadline_ns / nsec_per_sec;
+    deadline->tv_nsec = deadline_ns % nsec_per_sec;
+}
+
 }    // namespace
 /* -------------------------------------------- *** -------------------------------------------- */
 
@@ -373,11 +417,39 @@ int thread_task_timed_join(thread_task *task, const double timeout) {
     if (task == nullptr) {
         return TPOOL_ERR_INVALID_ARGUMENT;
     }
-    if (timeout <= 0.1) {
+
+    pthread_mutex_lock(&task->mutex);
+    if (task->parent_pool == nullptr && task->task_state == State::New) {
+        pthread_mutex_unlock(&task->mutex);
+        return TPOOL_ERR_TASK_NOT_PUSHED;
+    }
+    // already joined
+    if (task->task_state == State::Finished && task->is_joined && task->parent_pool == nullptr) {
+        pthread_mutex_unlock(&task->mutex);
+        return success;
+    }
+    if (task->task_state == State::Finished && !task->is_joined) {
+        pthread_mutex_unlock(&task->mutex);
+        return thread_task_join(task);
+    }
+
+    if (timeout <= 0.0) {
+        pthread_mutex_unlock(&task->mutex);
         return TPOOL_ERR_TIMEOUT;
     }
 
-    return TPOOL_ERR_NOT_IMPLEMENTED;
+    timespec deadline {};
+    initializeDeadline(&deadline, timeout);
+
+    while (task->task_state != State::Finished) {
+        if (pthread_cond_timedwait(&task->finished_cv, &task->mutex, &deadline) == ETIMEDOUT) {
+            pthread_mutex_unlock(&task->mutex);
+            return TPOOL_ERR_TIMEOUT;
+        }
+    }
+
+    pthread_mutex_unlock(&task->mutex);
+    return thread_task_join(task);
 }
 
 #endif
