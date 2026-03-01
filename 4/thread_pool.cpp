@@ -260,7 +260,50 @@ int thread_pool_push_task(thread_pool *pool, thread_task *task) {
         return TPOOL_ERR_INVALID_ARGUMENT;
     }
 
-    return TPOOL_ERR_NOT_IMPLEMENTED;
+    // lock pool & check
+    pthread_mutex_lock(&pool->mutex);
+    if (pool->stop) {
+        pthread_mutex_unlock(&pool->mutex);
+        return TPOOL_ERR_INVALID_ARGUMENT;
+    }
+    if (pool->tasks_in_pool.size() >= TPOOL_MAX_TASKS) {
+        pthread_mutex_unlock(&pool->mutex);
+        return TPOOL_ERR_TOO_MANY_TASKS;
+    }
+
+    // lock task & check
+    pthread_mutex_lock(&task->mutex);
+    if (task->parent_pool != nullptr) {
+        pthread_mutex_unlock(&task->mutex);
+        pthread_mutex_unlock(&pool->mutex);
+        return TPOOL_ERR_TASK_IN_POOL;
+    }
+    if (task->task_state == State::Queued || task->task_state == State::Running) {
+        pthread_mutex_unlock(&task->mutex);
+        pthread_mutex_unlock(&pool->mutex);
+        return TPOOL_ERR_TASK_IN_POOL;
+    }
+    if (task->task_state == State::Finished && !task->is_joined) {
+        pthread_mutex_unlock(&task->mutex);
+        pthread_mutex_unlock(&pool->mutex);
+        return TPOOL_ERR_TASK_IN_POOL;
+    }
+
+    task->parent_pool = pool;
+    task->task_state = State::Queued;
+    task->is_joined = false;
+    task->is_detached = false;
+    pthread_mutex_unlock(&task->mutex);
+
+    pool->tasks_queue.push_back(task);
+    pool->tasks_in_pool.insert(task);
+    if (const auto result = wakeOrSpawnNewTask(pool); result != success) {
+        pthread_mutex_unlock(&pool->mutex);
+        // do not checked by tests
+        return result;
+    }
+    pthread_mutex_unlock(&pool->mutex);
+    return success;
 }
 
 int thread_task_new(thread_task **task, const thread_task_f &function) {
