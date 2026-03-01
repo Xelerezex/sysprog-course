@@ -208,22 +208,21 @@ bool isLockHeld(pthread_mutex_t *mutex) {
 
 [[maybe_unused]] int wakeOrSpawnNewTask(thread_pool *pool) {
     // mutex should be locked
-    if (pool->idle_workers > 0) {
-        pthread_cond_signal(&pool->has_task_cv);
-    } else if (pool->threads.size() < static_cast<std::size_t>(pool->max_threads)) {
+
+    if (pool->threads.size() < static_cast<std::size_t>(pool->max_threads)) {
         if (const auto spawn_result = spawnLockedWorker(pool); spawn_result != success) {
             return spawn_result;
         }
-        pthread_cond_signal(&pool->has_task_cv);
-    } else {
-        pthread_cond_signal(&pool->has_task_cv);
     }
+    pthread_cond_signal(&pool->has_task_cv);
 
     return success;
 }
 
 void initializeDeadline(timespec *deadline, const double delay_seconds) {
+    // ReSharper disable once CppDFAConstantConditions
     if (deadline == nullptr) {
+        // ReSharper disable once CppDFAUnreachableCode
         return;
     }
 
@@ -251,15 +250,15 @@ void initializeDeadline(timespec *deadline, const double delay_seconds) {
         now_seconds_in_nano_seconds = now.tv_sec * nsec_per_sec;
     }
 
-    const int64_t now_nano_seconds = (now_seconds_in_nano_seconds == max_int64_value)
+    const int64_t now_nano_seconds = now_seconds_in_nano_seconds == max_int64_value
                                              ? max_int64_value
-                                             : (now_seconds_in_nano_seconds + now.tv_nsec);
-    const int64_t deadline_ns = (now_nano_seconds > max_int64_value - add_nano_seconds)
-                                        ? max_int64_value
-                                        : (now_nano_seconds + add_nano_seconds);
+                                             : now_seconds_in_nano_seconds + now.tv_nsec;
+    const int64_t deadline_nano_seconds = now_nano_seconds > max_int64_value - add_nano_seconds
+                                                  ? max_int64_value
+                                                  : now_nano_seconds + add_nano_seconds;
 
-    deadline->tv_sec = deadline_ns / nsec_per_sec;
-    deadline->tv_nsec = deadline_ns % nsec_per_sec;
+    deadline->tv_sec = deadline_nano_seconds / nsec_per_sec;
+    deadline->tv_nsec = deadline_nano_seconds % nsec_per_sec;
 }
 
 }    // namespace
@@ -454,6 +453,7 @@ int thread_task_timed_join(thread_task *task, const double timeout) {
 
 #endif
 
+// ReSharper disable once CppParameterMayBeConstPtrOrRef
 int thread_task_delete(thread_task *task) {
     if (task == nullptr) {
         return TPOOL_ERR_INVALID_ARGUMENT;
@@ -484,8 +484,36 @@ int thread_task_detach(thread_task *task) {
     if (task == nullptr) {
         return TPOOL_ERR_INVALID_ARGUMENT;
     }
+    pthread_mutex_lock(&task->mutex);
+    if (task->parent_pool == nullptr && task->task_state == State::New) {
+        pthread_mutex_unlock(&task->mutex);
+        return TPOOL_ERR_TASK_NOT_PUSHED;
+    }
 
-    return TPOOL_ERR_NOT_IMPLEMENTED;
+    bool delete_now = false;
+    thread_pool *current_pool = nullptr;
+    if (task->task_state == State::Finished) {
+        task->is_detached = true;
+        task->is_joined = true;
+        current_pool = task->parent_pool;
+        task->parent_pool = nullptr;
+        delete_now = true;
+    } else {
+        task->is_detached = true;
+    }
+    pthread_mutex_unlock(&task->mutex);
+
+    // Remove from pool ownership and delete.
+    if (current_pool != nullptr) {
+        pthread_mutex_lock(&current_pool->mutex);
+        current_pool->tasks_in_pool.erase(task);
+        pthread_mutex_unlock(&current_pool->mutex);
+    }
+    if (delete_now) {
+        delete task;
+    }
+
+    return success;
 }
 
 #endif
