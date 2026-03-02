@@ -89,22 +89,40 @@ namespace {
  * pthread_cond_wait()      -> .wait()
  */
 
+#if defined(__linux__)
+constexpr clockid_t kCondClock = CLOCK_MONOTONIC;
+#else
+constexpr clockid_t kCondClock = CLOCK_REALTIME; // macOS pthread_cond_timedwait uses realtime
+#endif
+
 void initializeConditionVariable(pthread_cond_t *condition) {
-    pthread_condattr_t attributes {};
-    if (success != pthread_condattr_init(&attributes)) {
+    pthread_condattr_t attributes{};
+    if (pthread_condattr_init(&attributes) != success) {
         pthread_cond_init(condition, nullptr);
         return;
     }
-    if (success != pthread_condattr_setclock(&attributes, CLOCK_MONOTONIC)) {
+
+#if defined(__linux__)
+    // On Linux we can select the clock used by timed waits.
+    if (pthread_condattr_setclock(&attributes, kCondClock) != success) {
         pthread_condattr_destroy(&attributes);
         pthread_cond_init(condition, nullptr);
         return;
     }
-    if (success != pthread_cond_init(condition, &attributes)) {
+    if (pthread_cond_init(condition, &attributes) != success) {
         pthread_condattr_destroy(&attributes);
         pthread_cond_init(condition, nullptr);
         return;
     }
+#else
+    // macOS: no pthread_condattr_setclock()
+    if (pthread_cond_init(condition, nullptr) != success) {
+        pthread_condattr_destroy(&attributes);
+        pthread_cond_init(condition, nullptr);
+        return;
+    }
+#endif
+
     pthread_condattr_destroy(&attributes);
 }
 
@@ -227,7 +245,7 @@ void initializeDeadline(timespec *deadline, const double delay_seconds) {
     }
 
     timespec now {};
-    clock_gettime(CLOCK_MONOTONIC, &now);
+    clock_gettime(kCondClock, &now);
     if (delay_seconds <= 0.0) {
         *deadline = now;
         return;
