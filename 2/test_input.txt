@@ -1,0 +1,5 @@
+mkfifo chan.txt
+echo '100' > chan.txt &
+echo 'foreground work'
+cat chan.txt
+rm chan.txt
