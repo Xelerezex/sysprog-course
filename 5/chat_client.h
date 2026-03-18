@@ -19,7 +19,7 @@ void chat_client_delete(struct chat_client *client);
  * Try to connect to the given address.
  *
  * @param client Chat client.
- * @param addr Address to connect to, like 'localhost:1234',
+ * @param address Address to connect to, like 'localhost:1234',
  *     '127.0.0.1:3313', '192.168.0.1:4567', etc.
  *
  * @retval 0 Success.
@@ -28,7 +28,7 @@ void chat_client_delete(struct chat_client *client);
  *     - CHAT_ERR_NO_ADDR - the addr couldn't be resolved to any IP.
  *     - CHAT_ERR_SYS - a system error, check errno.
  */
-int chat_client_connect(struct chat_client *client, std::string_view addr);
+int chat_client_connect(struct chat_client *client, std::string_view address);
 
 /**
  * Pop a next pending chat message. The returned message has to be
@@ -78,11 +78,11 @@ int chat_client_get_events(const struct chat_client *client);
  * Feed a message to the client.
  *
  * @param client Chat client.
- * @param msg Message.
+ * @param message Message.
  * @param msg_size Size of the message.
  *
  * @retval 0 Success.
  * @retval !=0 Error code.
  *     - CHAT_ERR_NOT_STARTED - the client is not connected yet.
  */
-int chat_client_feed(struct chat_client *client, const char *msg, uint32_t msg_size);
+int chat_client_feed(struct chat_client *client, const char *message, uint32_t msg_size);

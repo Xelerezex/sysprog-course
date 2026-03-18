@@ -85,7 +85,7 @@ int chat_server_get_events(const struct chat_server *server);
  * Feed a message to the server to broadcast to all clients.
  *
  * @param server Chat server.
- * @param msg Message.
+ * @param message Message.
  * @param msg_size Size of the message.
  *
  * @retval 0 Success.
@@ -93,4 +93,4 @@ int chat_server_get_events(const struct chat_server *server);
  *     - CHAT_ERR_NOT_IMPLEMENTED - not implemented.
  *     - CHAT_ERR_NOT_STARTED - the server is not listening yet.
  */
-int chat_server_feed(struct chat_server *server, const char *msg, uint32_t msg_size);
+int chat_server_feed(struct chat_server *server, const char *message, uint32_t msg_size);
