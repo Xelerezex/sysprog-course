@@ -16,6 +16,7 @@
 #define NEED_AUTHOR 1
 #define NEED_SERVER_FEED 1
 
+#include <cstdint>
 #include <string>
 
 enum chat_errcode {
